@@ -300,7 +300,7 @@ function extItems(key, useQ = true){
 /** 預計報到日：看板上填的到職日，沒填就用試算表的預計報到日 */
 const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
 
-/* ================= 104 寄件匣（outbox）：看板排入，這台電腦上的「104 自動送出程式」在 104 送出 ================= */
+/* ================= 104 寄件匣（outbox）：看板排入，瀏覽器擴充功能「104 小幫手」在 104 送出；也可以「複製並打開 104」手動送（via: 'manual'）================= */
 const OB_TYPES = ['invite', 'thanks', 'message', 'skip'];
 const OB_ST = ['queued', 'sending', 'sent', 'failed', 'canceled', 'done'];
 const OB_LABEL = {invite:'邀約面試', thanks:'感謝函', message:'訊息', skip:'不邀約'};
@@ -314,7 +314,7 @@ function normOb(d){
   return {id:String(d.id), type:d.type, status: OB_ST.includes(d.status) ? d.status : 'queued',
     to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400)}, text:s(d.text, 1000),
     opts:{job:s(op.job, 80), place:s(op.place, 120), contactName:s(op.contactName, 40), contactPhone:s(op.contactPhone, 40), replyDays: Number.isInteger(op.replyDays) ? op.replyDays : 3},
-    createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, result:s(d.result, 300), tries: Number(d.tries) || 0};
+    createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, via:s(d.via, 10), result:s(d.result, 300), tries: Number(d.tries) || 0};
 }
 function normTpl(d){
   d = obj(d);
@@ -340,7 +340,7 @@ function obChip(o){
   if (o.type === 'skip') return chip('已標記不邀約');
   if (o.status === 'queued') return chip(`${what}・排隊中`, 'warn');
   if (o.status === 'sending') return chip(`${what}・送出中`, 'warn');
-  if (o.status === 'sent') return chip(`${what}・${fmtTime(o.sentAt)} 已送出`, 'ok');
+  if (o.status === 'sent') return chip(`${what}・${fmtTime(o.sentAt)} ${o.via === 'manual' ? '手動' : ''}已送出`, 'ok');
   if (o.status === 'failed') return chip(`${what}・送出失敗`, 'danger');
   if (o.status === 'canceled') return chip(`${what}・已取消`);
   return '';
@@ -746,7 +746,7 @@ function renderToolbar(){
   bb.textContent = S.batch ? '結束批次整理' : '批次整理';
   $('#ins-note').hidden = rec;
   $('#rc-note').hidden = !rec;
-  const rn = $('#rn-note'); rn.hidden = !rec || !canEdit(); rn.textContent = `104 自動送出程式：${rnLine()}`;
+  const rn = $('#rn-note'); rn.hidden = !rec || !canEdit(); rn.textContent = `104 小幫手：${rnLine()}`;
 }
 function renderStats(){
   const all = [...S.hires.values()];
@@ -829,6 +829,7 @@ function extCardHTML(r, key){
     if (key === 'x_screen') acts.push(`<button class="btn sm primary" type="button" data-ob="invite" data-row="${rid_}">邀約</button>`, `<button class="btn sm" type="button" data-ob="reject" data-row="${rid_}">不邀約</button>`);
     else acts.push(`<button class="btn sm" type="button" data-ob="message" data-row="${rid_}">傳訊息</button>`);
     if (o && o.status === 'failed') acts.push(`<button class="btn sm" type="button" data-ob="retry" data-ob-id="${esc(o.id)}">重送</button>`);
+    if (o && o.status === 'failed' && o.text && is104(o.to.cv)) acts.push(`<button class="btn sm" type="button" data-ob="manual" data-ob-id="${esc(o.id)}">改手動送</button>`);
     if (o && o.status === 'queued') acts.push(`<button class="btn sm ghost" type="button" data-ob="cancel" data-ob-id="${esc(o.id)}">取消送出</button>`);
   }
   const links = [extLink(r.cv, '104 履歷'), extLink(r.mail, 'Gmail')].filter(Boolean).join('');
@@ -1552,9 +1553,9 @@ function renderOb(fresh){
   const text = v('ob-text', fresh ? fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job)) : '');
   const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息'}[type];
   $('#ob-title').textContent = `${title}・${r.name}`;
-  const warn = !RN.configured ? '還沒有設定 104 自動送出程式（管理頁），排入後要等程式設定好才會送出。'
-    : !rnOnline() ? '104 自動送出程式目前沒有在執行，排入後要等程式開啟才會送出。'
-    : RN.login === 'logged_out' ? '104 自動送出程式還沒登入 104，請先在程式開的瀏覽器登入。' : '';
+  const warn = !RN.configured ? '還沒有設定 104 小幫手（管理頁），排入後要等小幫手設定好才會送出；也可以按「複製並打開 104」自己送。'
+    : !rnOnline() ? '104 小幫手目前沒有在執行（裝了小幫手的瀏覽器沒開），排入後要等它開了才會送出；急的話按「複製並打開 104」自己送。'
+    : RN.login === 'logged_out' ? '104 小幫手那邊還沒登入 104，請在裝了小幫手的瀏覽器登入；或按「複製並打開 104」自己送。' : '';
   $('#ob-body').innerHTML = `
     <p class="ob-to"><b>${esc(r.name)}</b>${r.job ? `・${esc(r.job)}` : ''}${r.cv ? ` <a class="link" href="${esc(r.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>` : ''}</p>
     ${type === 'reject' ? `<div class="ob-mode" role="radiogroup" aria-label="不邀約的方式">
@@ -1571,28 +1572,47 @@ function renderOb(fresh){
       <div class="f"><label for="ob-cname">聯絡窗口</label><input id="ob-cname" value="${esc(v('ob-cname', S.cfg.contactName))}" maxlength="40"></div>
       <div class="f"><label for="ob-cphone">聯絡電話</label><input id="ob-cphone" value="${esc(v('ob-cphone', S.cfg.contactPhone))}" maxlength="40"></div>` : ''}
     </div>
-    <p class="note">按「排入送出」後，這台電腦上的 104 自動送出程式約 1 分鐘內在 104 送出；還沒送出前可以在卡片上按「取消送出」。內容裡還留著 {{…}} 的地方請先改好。</p>`
+    <p class="note">「排入送出」：104 小幫手約 1 分鐘內在 104 自動送出，還沒送出前可以在卡片上按「取消送出」。「複製並打開 104」：內容先複製好、打開這位應徵者的 104 履歷，你在 104 貼上、按確認（任何電腦都能用）。內容裡還留著 {{…}} 的地方請先改好。</p>`
     : '<p class="note">只在看板上記下「不邀約」，不會傳任何訊息給應徵者。</p>'}
     ${send && warn ? `<p class="imp-msg">${esc(warn)}</p>` : ''}
     ${OBM.err ? `<p class="imp-msg err" role="alert">${esc(OBM.err)}</p>` : ''}
-    <div class="form-foot"><button class="btn" type="button" data-ob-close="1">取消</button><button class="btn primary" type="button" id="ob-send">${send ? '排入送出' : '標記不邀約'}</button></div>`;
+    <div class="form-foot"><button class="btn" type="button" data-ob-close="1">取消</button>${send ? `<button class="btn" type="button" id="ob-manual"${is104(r.cv) ? '' : ' disabled title="這位應徵者沒有 104 履歷連結"'}>複製並打開 104</button>` : ''}<button class="btn primary" type="button" id="ob-send">${send ? '排入送出' : '標記不邀約'}</button></div>`;
 }
-function sendOb(){
+function sendOb(manual){
   const r = OBM.row; if (!r || !canEdit()) return;
   const type = OBM.type === 'reject' ? (OBM.mode === 'skip' ? 'skip' : 'thanks') : OBM.type;
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const text = type === 'skip' ? '' : val('ob-text'), job = val('ob-job') || r.job || '';
   const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
     : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : '';
+  if (!err && manual && !is104(r.cv)) { OBM.err = '這位應徵者沒有 104 履歷連結，不能在 104 送出。'; renderOb(false); return; }
   if (err) { OBM.err = err; renderOb(false); return; }
   const days = Math.min(14, Math.max(1, parseInt(val('ob-days'), 10) || S.cfg.replyDays));
-  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : 'queued', to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r)}, text,
+  const how = manual && type !== 'skip' ? manualSend(text, r.cv, type) : '';   // 要在按鈕的點擊裡複製、開分頁
+  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : how ? 'sent' : 'queued', ...(how ? {via:'manual', sentAt:Date.now(), result:'在 104 手動送出'} : {}), to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r)}, text,
     opts:{job, place: val('ob-place') || S.cfg.place, contactName: val('ob-cname') || S.cfg.contactName, contactPhone: val('ob-cphone') || S.cfg.contactPhone, replyDays: days},
     createdAt:Date.now(), createdBy:myName()};
   ST.save('outbox', rec);
   closeOb();
   pullFromStore(); render();
-  toast(type === 'skip' ? `${r.name} 標記為不邀約` : `${OB_LABEL[type]}已排入，104 自動送出程式會送出`, () => { const cur = ST.get('outbox', rec.id); if (cur && (cur.status === 'queued' || cur.status === 'done')) ST.remove('outbox', rec.id); });
+  toast(type === 'skip' ? `${r.name} 標記為不邀約` : how || `${OB_LABEL[type]}已排入，104 小幫手會在 104 送出`, () => { const cur = ST.get('outbox', rec.id); if (cur && (cur.status === 'queued' || cur.status === 'done' || cur.via === 'manual')) { ST.remove('outbox', rec.id); pullFromStore(); render(); } }, how ? 15000 : 0);
+}
+/** 半自動：內容複製到剪貼簿、打開這位應徵者的 104 應徵履歷，使用者自己在 104 貼上按確認 */
+const is104 = u => /^https:\/\/vip\.104\.com\.tw\//.test(u || '');
+const MANUAL_HOW = {invite:'在 104 按【邀約】→【詢問意願】', thanks:'在 104 按【感謝函】', message:'在 104 按【邀約】→【詢問意願】'};
+function copyText(text){
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.append(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  ta.remove();
+  if (!ok && navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}
+function manualSend(text, cv, type){
+  copyText(text);
+  window.open(cv, '_blank', 'noopener');
+  return `內容已複製：${MANUAL_HOW[type] || '在 104 打開表單'}，聯絡內容按 Ctrl+V 貼上，確認通知職務後按【確認】。沒送出就按復原。`;
 }
 function obUpdate(id, patch){
   const cur = ST.get('outbox', id); if (!cur || !canEdit()) return;
@@ -1600,7 +1620,7 @@ function obUpdate(id, patch){
   pullFromStore(); render();
 }
 
-/* ---------- 管理頁：104 自動送出程式、訊息預設值與範本、AI 篩選 ---------- */
+/* ---------- 管理頁：104 小幫手（瀏覽器擴充功能）、訊息預設值與範本、AI 篩選 ---------- */
 const RK = {key:'', busy:false, msg:'', confirm:false};
 const TE = {open:'', confirm:'', drafts:{}, msg:''};
 const AT = {text:'', busy:false, result:null, msg:'', err:false};
@@ -1610,9 +1630,9 @@ function applyRunnerStatus(j){
 }
 function rnLine(){
   const when = ms => new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
-  if (!RN.configured) return '還沒有設定：在管理頁產生鑰匙，貼進這台電腦的 104 自動送出程式。';
+  if (!RN.configured) return '還沒有設定：產生鑰匙，貼到 104 小幫手（瀏覽器擴充功能）的設定頁。';
   if (!RN.lastSeen) return '已產生鑰匙，程式還沒連線過。';
-  const login = RN.login === 'ok' ? '已登入 104' : RN.login === 'logged_out' ? '沒有登入 104（請在程式開的瀏覽器登入）' : '104 登入狀態不明';
+  const login = RN.login === 'ok' ? '已登入 104' : RN.login === 'logged_out' ? '沒有登入 104（請在裝了小幫手的瀏覽器登入）' : '104 登入狀態不明';
   return `${rnOnline() ? '執行中' : '目前沒有在執行'}・上次連線 ${when(RN.lastSeen)}・${login}${RN.note ? '・' + RN.note : ''}`;
 }
 function obAdminHTML(){
@@ -1632,11 +1652,11 @@ function obAdminHTML(){
   }).join('');
   const r = AT.result;
   return `<section class="ov-card" aria-labelledby="ob-h"><header class="ov-h"><h2 id="ob-h">104 自動送出・訊息範本・AI 篩選</h2></header>
-    <h3 class="fm-h">104 自動送出程式（這台電腦）</h3>
+    <h3 class="fm-h">104 小幫手（瀏覽器擴充功能）</h3>
     <p>${esc(rnLine())}</p>
-    ${RK.key ? `<div class="mn-path"><code>${esc(RK.key)}</code><button class="btn sm ghost" type="button" data-copy="${esc(RK.key)}">複製</button></div><p class="muted">鑰匙只顯示這一次：貼進程式資料夾的 runner-config.json（"key" 欄位）。</p>` : ''}
+    ${RK.key ? `<div class="mn-path"><code>${esc(RK.key)}</code><button class="btn sm ghost" type="button" data-copy="${esc(RK.key)}">複製</button></div><p class="muted">鑰匙只顯示這一次：貼到 104 小幫手的設定頁（點小幫手圖示 →「設定」）。</p>` : ''}
     <div class="fl-row">${RK.confirm
-      ? '<span class="confirm-q" style="width:auto">換新鑰匙後，舊鑰匙馬上失效，程式要改用新的。確定？</span><button class="btn sm danger-solid" type="button" data-u="rk-new-yes">換新鑰匙</button><button class="btn sm ghost" type="button" data-u="rk-cancel">不要</button>'
+      ? '<span class="confirm-q" style="width:auto">換新鑰匙後，舊鑰匙馬上失效，每個裝了小幫手的瀏覽器都要改貼新的。確定？</span><button class="btn sm danger-solid" type="button" data-u="rk-new-yes">換新鑰匙</button><button class="btn sm ghost" type="button" data-u="rk-cancel">不要</button>'
       : `<button class="btn sm" type="button" data-u="rk-new"${RK.busy ? ' disabled' : ''}>${RN.configured ? '換新鑰匙' : '產生鑰匙'}</button>`}</div>
     ${RK.msg ? `<p class="imp-msg" role="status">${esc(RK.msg)}</p>` : ''}
     <h3 class="fm-h">邀約預設值</h3>
@@ -2228,7 +2248,7 @@ async function readImportFile(file){
 
 /* ================= 提示、放大圖 ================= */
 let toastTimer;
-function toast(msg, undo){
+function toast(msg, undo, ms){
   const t = $('#toast');
   t.textContent = '';
   const span = document.createElement('span'); span.textContent = msg; t.append(span);
@@ -2240,7 +2260,7 @@ function toast(msg, undo){
   }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, undo ? 6000 : 3200);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms || (undo ? 6000 : 3200));
 }
 function openLightbox(url){ $('#lb-img').src = url; $('#lightbox').hidden = false; $('#lb-close').focus(); }
 function closeLightbox(){ $('#lightbox').hidden = true; $('#lb-img').removeAttribute('src'); }
@@ -2450,7 +2470,8 @@ $('#drawer').addEventListener('click', e => {
 $('#d-close').addEventListener('click', () => closeDrawer());
 $('#obm').addEventListener('click', e => {
   if (e.target.closest('[data-ob-close]')) { closeOb(); return; }
-  if (e.target.closest('#ob-send')) sendOb();
+  if (e.target.closest('#ob-send')) sendOb(false);
+  else if (e.target.closest('#ob-manual')) sendOb(true);
 });
 $('#obm').addEventListener('change', e => {
   const t = e.target;
@@ -2462,6 +2483,14 @@ $('#board').addEventListener('click', e => {
   const b = e.target.closest('[data-ob]'); if (!b || !canEdit()) return;
   e.stopPropagation();
   const act = b.dataset.ob;
+  if (act === 'manual') {   // 小幫手送不出去：改成自己在 104 送
+    const cur = ST.get('outbox', b.dataset.obId), o = normOb(cur);
+    if (!o || o.status !== 'failed' || !o.text || !is104(o.to.cv)) { toast('這筆沒有內容或 104 履歷連結，不能手動送'); return; }
+    const how = manualSend(o.text, o.to.cv, o.type);
+    obUpdate(o.id, {status:'sent', via:'manual', sentAt:Date.now(), result:'在 104 手動送出'});
+    toast(how, () => obUpdate(o.id, {status:'failed', via:'', sentAt:0, result:o.result}), 15000);
+    return;
+  }
   if (act === 'retry') { obUpdate(b.dataset.obId, {status:'queued', tries:0, result:''}); toast('已重新排入送出'); return; }
   if (act === 'cancel') { const cur = ST.get('outbox', b.dataset.obId); if (cur && cur.status === 'queued') { obUpdate(b.dataset.obId, {status:'canceled'}); toast('已取消送出'); } else toast('已經在送出中，來不及取消'); return; }
   openOb(act, rowById(b.dataset.row));
