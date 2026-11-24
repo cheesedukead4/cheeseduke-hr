@@ -7,6 +7,7 @@
  *      checks_YYYYMM   例行工作打勾紀錄，一個期間一筆（id 例如 d-2026-11-24、w-2026-W48、m-2026-11），依「日期」（date）的年月分檔
  *      slots           面試時段（線上應徵表單用）
  *      jobs            職缺條件（面試時對照；管理頁編輯）
+ *      manual          工作清冊：雲端後端從「HR工作清冊」試算表整理的，只能讀
  *      recruit         招募進度：雲端後端從「履歷篩選」試算表整理的，只能讀（READONLY，裝置不上傳也不重建）
  *  - 每類有雲端版本號；上傳時帶「我是根據哪一版改的」，有人搶先更新就先下載，以單筆（id）為單位三方合併後再上傳
  *  - 同一筆的同一個欄位被兩個人改成不同值時，以這台裝置的修改為準，並通知畫面提示
@@ -20,10 +21,10 @@
   var STORE = 'kv';
   var POLL_MS = 30000;
   var PUSH_DELAY_MS = 800;
-  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件' };
+  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件', manual: '工作清冊' };
   var MONTHLY = ['checks'];   // 依日期年月分檔的種類（資料要有 date 欄位）
-  var KEY_RE = /^(hires|routines|slots|recruit|jobs|checks_\d{6})$/;
-  var READONLY = ['recruit'];   // 雲端後端寫的類別：只下載
+  var KEY_RE = /^(hires|routines|slots|recruit|jobs|manual|checks_\d{6})$/;
+  var READONLY = ['recruit', 'manual'];   // 雲端後端寫的類別：只下載
 
   var parts = Object.create(null);   // 類別 -> JSON 字串（目前本機值，陣列）
   var bases = Object.create(null);   // 類別 -> 上次與雲端一致時的 JSON 字串（僅本機有未上傳修改時保存）

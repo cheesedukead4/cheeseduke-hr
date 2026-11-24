@@ -16,6 +16,8 @@
  *   routines  { id, freq: daily|weekly|monthly, title, due, order, createdAt, createdBy }
  *   checks    { id: d-YYYY-MM-DD | w-YYYY-Www | m-YYYY-MM, date: 期間第一天, freq, done: { 項目 id: { at, by } } }
  *   jobs      { id, title, keys: 應徵職位關鍵字（逗號分開）, text: 條件（# 段落、- 條件）, order }（職缺條件，管理頁編輯）；hires.crit = { job, ok: [已勾條件的 key] }
+ *   manual    （只能讀，雲端後端從「HR工作清冊」試算表寫）{ id, sec, kind: daily|weekly|monthly|yearly|adhoc|project, weekday, day, months, title, owner, parts:[說明、程序、參考…], dues:[到期提醒] }
+ *             例行工作清單＝清冊項目（rtItems 的 sheet: true）＋ routines；「工作手冊」頁（#manual）列出全部；總覽提醒 dues。
  *   recruit   （只能讀，雲端後端寫）{ id, src: screen 篩選名單 | invite 面試邀約 | result 面試結果追蹤 | meta, name, job, ... }
  *             對到看板上的人：result 用「資料表連結」的文件 id（= hires 的 doc-文件id），其他用姓名＋日期相近（extFor）。
  * 權限（HRAuth.can）：edit 人事資料編輯、pii 查看證件、routine 例行工作設定；管理員全部都有。
@@ -94,13 +96,13 @@ const FREQS = [
 ];
 const FREQ_KEYS = FREQS.map(f => f.key);
 const PERMS = [
-  {id:'edit',    label:'人事資料編輯', desc:'新增面試者、匯入表單回覆、填寫評語、推進流程、上傳證件'},
+  {id:'edit',    label:'人事資料編輯', desc:'填寫評語、錄取與推進流程、面試時段、批次整理、上傳證件'},
   {id:'pii',     label:'查看證件',     desc:'看證件照片與完整身分證字號'},
   {id:'routine', label:'例行工作設定', desc:'新增、修改、刪除每日／每週／每月項目（打勾不需要權限）'}
 ];
 const PERM_LABEL = Object.fromEntries(PERMS.map(p => [p.id, p.label]));
-const VIEWS = ['overview','recruit','pipeline','routine','users'];
-const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', users:'users'}; // 招募與新進人員共用同一個看板畫面
+const VIEWS = ['overview','recruit','pipeline','routine','manual','users'];
+const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', manual:'manual', users:'users'}; // 招募與新進人員共用同一個看板畫面
 
 /* 起士公爵人事資料表：回覆試算表的標題（去掉空白）→ 欄位，同名欄位依出現順序對應 */
 const COLS = {
@@ -153,7 +155,8 @@ const S = {
   month:curMonth(), q:'', tabs:{recruit:'interview', pipeline:'docs'}, open:{}, view:'overview',
   openId:null, creating:false, confirm:null, uploading:{}, pendingSlot:null, showId:false,
   rtEdit:{}, rtConfirm:null, imp:null,
-  batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[]
+  batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[],
+  mnQ:'', mnOpen:new Set(), mnFocus:'', rtMn:new Set()
 };
 const U = {list:null, admins:[], loading:false, error:'', confirm:null, editing:null};
 const inMonth = s => !!s && s.slice(0,7) === S.month;
@@ -200,6 +203,7 @@ function pullFromStore(){
   for (const f of FREQS) { const rec = ST.get('checks', keys[f.key]); S.checks[f.key] = {done: rec ? obj(rec.done) : {}}; }
   S.jobs = ST.list('jobs').map(normJob).filter(Boolean).sort((a, b) => a.order - b.order || (a.title < b.title ? -1 : 1));
   buildRecruit();
+  buildManual();
   S.loaded = !!ST.status().loaded;
 }
 
@@ -284,6 +288,81 @@ function extItems(key, useQ = true){
 }
 /** 預計報到日：看板上填的到職日，沒填就用試算表的預計報到日 */
 const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
+
+/* ================= 工作清冊（「HR工作清冊」試算表，只能看）：例行工作項目、工作手冊、到期提醒 ================= */
+const M = {meta:null, items:[], byId:new Map()};
+const MN_KINDS = ['daily','weekly','monthly','yearly','adhoc','project'];
+const MN_GROUPS = [['daily','每日'],['weekly','每週'],['monthly','每月'],['yearly','每年'],['adhoc','不定期'],['project','專案性']];
+function cleanManual(d){
+  const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  const parts = (Array.isArray(d.parts) ? d.parts : []).slice(0, 20).map(p => { p = obj(p); return {desc:s(p.desc, 2000), steps:s(p.steps, 2000), ref:s(p.ref, 2000), file:s(p.file, 600), teachFile:s(p.teachFile, 200), teachVideo:s(p.teachVideo, 400)}; });
+  const dues = (Array.isArray(d.dues) ? d.dues : []).slice(0, 8).map(obj)
+    .filter(x => (x.type === 'date' && isDate(x.date)) || (x.type === 'md' && /^\d{2}-\d{2}$/.test(x.md || '')) || ((x.type === 'mstart' || x.type === 'mend') && Number.isInteger(x.month) && x.month >= 1 && x.month <= 12))
+    .map(x => ({type:x.type, date:x.date || '', md:x.md || '', month:x.month || 0, label:s(x.label, 60), lead:Math.min(Math.max(Number(x.lead) || 30, 1), 400)}));
+  return {id:String(d.id), sec: d.sec === 'project' ? 'project' : 'routine', kind: MN_KINDS.includes(d.kind) ? d.kind : 'adhoc', freqRaw:s(d.freqRaw, 40), title:s(d.title, 80),
+    weekday: Number.isInteger(d.weekday) ? d.weekday : -1, day: Number.isInteger(d.day) ? d.day : 0,
+    months: Array.isArray(d.months) ? d.months.filter(m => Number.isInteger(m) && m >= 1 && m <= 12) : [],
+    owner:s(d.owner, 40), taught:s(d.taught, 40), duration:s(d.duration, 40), parts, dues};
+}
+function buildManual(){
+  const all = ST.list('manual').filter(r => r && typeof r === 'object' && r.id != null);
+  const m = all.find(r => r.id === '_meta');
+  M.meta = m ? {sheet: typeof m.sheet === 'string' ? m.sheet : ''} : null;
+  M.items = all.filter(r => r.id !== '_meta' && typeof r.title === 'string' && r.title.trim()).map(cleanManual);
+  M.byId = new Map(M.items.map(i => [i.id, i]));
+}
+const WD7 = '日一二三四五六';
+function mnDue(i){
+  if (i.kind === 'weekly') return i.weekday >= 0 ? `每週${WD7[i.weekday]}` : '';
+  if (i.kind === 'monthly') return i.day ? `每月 ${i.day} 號` : '';
+  if (i.kind === 'yearly') return `每年 ${i.months.join('、')} 月`;
+  return '';
+}
+/** 工作清冊裡這個期間要做的項目（每年的項目只在那幾個月出現在「每月」） */
+function mnRoutineItems(freq){
+  const month = new Date().getMonth() + 1;
+  return M.items.filter(i => i.sec === 'routine' && (freq === 'daily' ? i.kind === 'daily' : freq === 'weekly' ? i.kind === 'weekly' : (i.kind === 'monthly' || (i.kind === 'yearly' && i.months.includes(month)))))
+    .map((i, n) => ({id:i.id, freq, title:i.title, due:mnDue(i), order:n, sheet:true}));
+}
+/** 到期提醒：下一次的日期（每年的日期過了 14 天就算明年的） */
+function dueNext(d, t){
+  if (d.type === 'date') return d.date;
+  const y = +t.slice(0, 4);
+  const mk = yy => d.type === 'md' ? `${yy}-${d.md}` : d.type === 'mstart' ? `${yy}-${pad(d.month)}-01` : ymd(new Date(yy, d.month, 0));
+  let x = mk(y);
+  if (dayDiff(t, x) < -14) x = mk(y + 1);
+  return x;
+}
+function mnReminders(){
+  const t = today(), out = [];
+  for (const i of M.items) for (const d of i.dues) {
+    const date = dueNext(d, t), n = dayDiff(t, date);
+    if (isFinite(n) && n <= d.lead && n >= (d.type === 'date' ? -30 : -14)) out.push({i, d, date, n});
+  }
+  return out.sort((a, b) => a.n - b.n);
+}
+const dueText = n => n > 0 ? `還有 ${n} 天` : n === 0 ? '今天' : `已過 ${-n} 天`;
+const lineHTML = t => esc(t).replace(/\n/g, '<br>');
+/** 參考事項：Z 槽等路徑可以複製、https 連結可以點 */
+function refHTML(t){
+  return String(t).split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    if (/^[A-Za-z]:\\|^\\\\/.test(l)) return `<div class="mn-path"><code>${esc(l)}</code><button class="btn sm ghost" type="button" data-copy="${esc(l)}">複製</button></div>`;
+    const u = l.match(/https:\/\/[^\s"'<>，。]+/);
+    if (u) { const k = l.indexOf(u[0]); return `<div>${esc(l.slice(0, k))}<a class="link" href="${esc(u[0])}" target="_blank" rel="noopener">${esc(u[0].length > 64 ? u[0].slice(0, 61) + '…' : u[0])}</a>${esc(l.slice(k + u[0].length))}</div>`; }
+    return `<div>${esc(l)}</div>`;
+  }).join('');
+}
+function mnDetailHTML(i){
+  const multi = i.parts.length > 1;
+  const parts = i.parts.map((p, n) => {
+    const f = (label, html) => html ? `<div class="mn-f"><span>${label}</span><div>${html}</div></div>` : '';
+    const body = f('工作說明', p.desc && lineHTML(p.desc)) + f('程序', p.steps && lineHTML(p.steps)) + f('參考事項', p.ref && refHTML(p.ref))
+      + f('檔案', p.file && lineHTML(p.file)) + f('教學', (p.teachFile || p.teachVideo) && refHTML([p.teachFile, p.teachVideo].filter(Boolean).join('\n')));
+    return body ? `<div class="mn-part">${multi ? `<b class="mn-pn">${n + 1}</b>` : ''}<div>${body}</div></div>` : '';
+  }).join('');
+  const meta = [i.owner && `建議執行人：${i.owner}`, i.taught && `教學：${i.taught}`, i.duration && `時間：${i.duration}`].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join('');
+  return `${meta ? `<div class="mn-meta">${meta}</div>` : ''}${parts || '<p class="muted">工作清冊裡沒有寫說明。</p>'}`;
+}
 
 /* ================= 職缺條件（面試時對照；資料類別 jobs，管理頁編輯） ================= */
 function normJob(d){
@@ -533,11 +612,13 @@ function renderViews(){
   let left = 0;
   for (const f of FREQS) { const d = S.checks[f.key].done; left += rtItems(f.key).filter(r => !(d[r.id] && d[r.id].at)).length; }
   const urgent = S.loaded ? overviewAlerts().filter(a => a.sev >= 2).length : 0;
+  const remN = M.meta ? mnReminders().length : 0;
   const tabs = [
     ['overview', '總覽', urgent ? `${urgent} 項緊急` : ''],
     ['recruit', '招募', S.loaded ? `${inRecruit} 人` : ''],
     ['pipeline', '新進人員・勞健保', S.loaded ? `${inFlow} 人` : ''],
-    ['routine', '例行工作', S.loaded && S.routines.size ? `未完成 ${left}` : '']
+    ['routine', '例行工作', S.loaded && left ? `未完成 ${left}` : ''],
+    ['manual', '工作手冊', S.loaded && M.meta && remN ? `${remN} 項到期` : '']
   ];
   if (isAdmin()) tabs.push(['users', '管理', '']);
   $('#views').innerHTML = tabs.map(([k, t, b]) =>
@@ -566,7 +647,7 @@ function renderFoot(){
   $('#foot').innerHTML = `${me}<span>${n} 筆人事資料 · ${S.routines.size} 項例行工作</span>`;
 }
 function showView(){
-  for (const k of ['overview','pipeline','routine','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
+  for (const k of ['overview','pipeline','routine','manual','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
 }
 
 /* ================= 招募／新進人員・勞健保（同一個看板畫面，欄位不同） ================= */
@@ -579,14 +660,12 @@ function renderToolbar(){
   $('#m-label').textContent = `${y} 年 ${+m} 月`;
   $('#m-next').disabled = S.month >= curMonth();
   $('#q').placeholder = rec ? '搜尋姓名、職缺' : '搜尋姓名、職位、部門';
-  $('#imp-btn').hidden = !canW || !rec;
   $('#slot-btn').hidden = !canW || !rec;
   const bb = $('#batch-btn');
   bb.hidden = !canW || !rec;
   bb.classList.toggle('on', S.batch);
   bb.setAttribute('aria-pressed', String(S.batch));
   bb.textContent = S.batch ? '結束批次整理' : '批次整理';
-  $('#add-btn').hidden = !canW || !rec;
   $('#ins-note').hidden = rec;
   $('#rc-note').hidden = !rec;
 }
@@ -941,7 +1020,8 @@ function renderOverview(){
     const pending = cnt('interview'), confirming = cnt('confirm');
     const docsMissing = [...S.hires.values()].filter(h => h.stage === 'docs' && !docsReady(h)).length;
     const fresh = R.meta ? extItems('x_screen', false) : [], top = fresh.filter(r => r.tier === '推薦面試').length;
-    alertBody = (rows ? `<ul class="ov-list">${rows}</ul>` : '<p class="rt-empty">目前沒有報到、加保需要處理。</p>')
+    const remRows = (M.meta ? mnReminders() : []).map(x => `<li><button class="ov-row" type="button" data-mn-go="${esc(x.i.id)}"><span class="ov-who"><span class="ov-name">${esc(x.d.label || x.i.title)}</span><span class="ov-sub">${esc(x.i.title)}・${x.date.replace(/-/g, '/')}</span></span>${chip(dueText(x.n), x.n <= 7 ? 'warn' : '')}</button></li>`).join('');
+    alertBody = (rows || remRows ? `<ul class="ov-list">${rows}${remRows}</ul>` : '<p class="rt-empty">目前沒有報到、加保或到期事項需要處理。</p>')
       + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">證件未齊 ${docsMissing} 位 →</button>` : '')
       + (confirming ? `<button class="ov-more" type="button" data-go="recruit" data-tab="confirm">錄取待確認入職 ${confirming} 位 →</button>` : '')
       + (pending ? `<button class="ov-more" type="button" data-go="recruit" data-tab="interview">面試待決定 ${pending} 位 →</button>` : '')
@@ -1019,14 +1099,18 @@ function periodLabel(freq){
   }
   return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
 }
-const rtItems = freq => [...S.routines.values()].filter(r => r.freq === freq).sort((a, b) => a.order - b.order);
+/** 例行工作清單：工作清冊的項目（sheet: true，只能在試算表改）＋在 App 裡新增的項目 */
+const rtItems = freq => mnRoutineItems(freq).concat([...S.routines.values()].filter(r => r.freq === freq).sort((a, b) => a.order - b.order));
 function rtItemHTML(r, st){
   const checked = !!(st && st.at);
-  const cid = esc(`chk-${r.freq}-${r.id}`);
+  const cid = esc(`chk-${r.freq}-${r.id}`), mi = r.sheet ? M.byId.get(r.id) : null, open = !!mi && S.rtMn.has(r.id);
   return `<li class="rt-item${checked ? ' checked' : ''}"><input type="checkbox" id="${cid}" data-rt="check" data-id="${esc(r.id)}" data-freq="${r.freq}"${checked ? ' checked' : ''}>
-    <label for="${cid}"><span class="rt-t">${esc(r.title)}</span>${r.due ? `<span class="rt-due">${esc(r.due)}</span>` : ''}${checked ? `<span class="rt-by">${fmtTime(st.at)}${st.by ? '・' + esc(st.by) : ''}</span>` : ''}</label></li>`;
+    <label for="${cid}"><span class="rt-t">${esc(r.title)}</span>${r.due ? `<span class="rt-due">${esc(r.due)}</span>` : ''}${checked ? `<span class="rt-by">${fmtTime(st.at)}${st.by ? '・' + esc(st.by) : ''}</span>` : ''}</label>
+    ${mi ? `<button class="rt-more" type="button" data-mn-open="${esc(r.id)}" aria-expanded="${open}">${open ? '收起' : '步驟'}</button>` : ''}
+    ${open ? `<div class="rt-detail">${mnDetailHTML(mi)}</div>` : ''}</li>`;
 }
 function rtEditRow(r){
+  if (r.sheet) return `<div class="rt-edit locked"><span class="t">${esc(r.title)}</span><span class="muted">工作清冊・請改試算表</span></div>`;
   const confirming = S.rtConfirm === r.id, id = esc(r.id);
   return `<div class="rt-edit"><input class="inp t" id="rt-t-${id}" data-rt-field="title" data-id="${id}" value="${esc(r.title)}" maxlength="80" aria-label="項目名稱">
     <input class="inp due" id="rt-d-${id}" data-rt-field="due" data-id="${id}" value="${esc(r.due)}" maxlength="30" placeholder="期限（選填）" aria-label="期限">
@@ -1059,12 +1143,40 @@ function renderRoutine(){
   try { if (aid && typeof active.selectionStart === 'number') sel = [active.selectionStart, active.selectionEnd]; } catch {}
   const vals = {};
   root.querySelectorAll('.inp').forEach(i => { if (i.id) vals[i.id] = i.value; });
-  root.innerHTML = `<p class="rt-intro">勾選紀錄依期間自動重新開始：每日於午夜、每週於週一、每月於 1 日。每個人都可以打勾，會記下時間和打勾的人。</p>
+  root.innerHTML = `<p class="rt-intro">勾選紀錄依期間自動重新開始：每日於午夜、每週於週一、每月於 1 日。每個人都可以打勾，會記下時間和打勾的人。項目來自「HR工作清冊」試算表（每年的項目只在那幾個月出現），按「步驟」看說明與程序；也可以在 App 裡另外新增。</p>
     <div class="rt-grid">${FREQS.map(rtColHTML).join('')}</div>`;
   for (const [id, v] of Object.entries(vals)) { const el = document.getElementById(id); if (el && root.contains(el)) el.value = v; }
   if (aid) {
     const el = document.getElementById(aid);
     if (el && root.contains(el)) { el.focus(); if (sel) try { el.setSelectionRange(sel[0], sel[1]); } catch {} }
+  }
+}
+/* ================= 工作手冊（工作清冊的全部工作，可以搜尋） ================= */
+function mnCardHTML(i){
+  const t = today();
+  const chips = [i.freqRaw && chip(i.freqRaw), i.owner && chip(i.owner), i.duration && chip(i.duration)]
+    .concat(i.dues.map(d => { const x = dueNext(d, t), n = dayDiff(t, x), lb = d.label || '到期'; return chip(d.type === 'date' && /\d/.test(lb) ? lb : `${lb}・${md(x)}`, isFinite(n) && n <= d.lead && n >= -14 ? 'warn' : ''); }))
+    .filter(Boolean).join('');
+  return `<details class="mn-item" id="mn-${esc(i.id)}" data-mn="${esc(i.id)}"${S.mnOpen.has(i.id) ? ' open' : ''}><summary><span class="mn-t">${esc(i.title)}</span><span class="chips">${chips}</span></summary><div class="mn-body">${mnDetailHTML(i)}</div></details>`;
+}
+function renderManual(){
+  const root = $('#manual-view');
+  if (!root.querySelector('#mn-q')) root.innerHTML = `<div class="mn-top"><input class="inp" type="search" id="mn-q" placeholder="搜尋工作項目、說明、程序、路徑" aria-label="搜尋工作手冊"><span class="muted" id="mn-src"></span></div><div id="mn-body"></div>`;
+  $('#mn-src').textContent = M.meta ? `來源：「HR工作清冊」試算表的「${M.meta.sheet || '工作清冊'}」分頁・共 ${M.items.length} 項・要修改請改試算表` : '';
+  const q = S.mnQ.toLowerCase();
+  const hit = i => !q || [i.title, i.freqRaw, i.owner].concat(i.parts.flatMap(p => Object.values(p))).some(v => String(v).toLowerCase().includes(q));
+  let body;
+  if (!S.loaded) body = '<p class="rt-empty">讀取中…</p>';
+  else if (!M.meta) body = `<p class="rt-empty">${isAdmin() ? '還沒有連結「HR工作清冊」試算表。到「管理」頁的「工作清冊」貼上試算表網址。' : '管理員還沒有連結「HR工作清冊」試算表。'}</p>`;
+  else body = MN_GROUPS.map(([k, title]) => {
+    const list = M.items.filter(i => i.kind === k && hit(i));
+    return list.length ? `<section class="mn-group" aria-labelledby="mn-g-${k}"><h2 id="mn-g-${k}">${title}<span class="h-count">${list.length}</span></h2>${list.map(mnCardHTML).join('')}</section>` : '';
+  }).join('') || '<p class="rt-empty">沒有符合搜尋的工作。</p>';
+  $('#mn-body').innerHTML = body;
+  if (S.mnFocus) {
+    const el = document.getElementById('mn-' + S.mnFocus);
+    S.mnFocus = '';
+    if (el) { el.open = true; el.scrollIntoView({block:'start'}); el.querySelector('summary').focus(); }
   }
 }
 function toggleCheck(freq, itemId, on){
@@ -1081,7 +1193,7 @@ function addRoutine(freq){
   const title = t.value.trim(), due = du.value.trim();
   if (!title) { t.focus(); return; }
   t.value = ''; du.value = '';
-  const items = rtItems(freq);
+  const items = rtItems(freq).filter(i => !i.sheet);
   const order = items.length ? Math.max(...items.map(i => i.order)) + 1 : 1;
   ST.save('routines', {id:rid('r'), freq, title, due, order, createdAt:Date.now(), createdBy:myName()});
   const t2 = $('#rt-new-' + freq); if (t2) t2.focus();
@@ -1121,9 +1233,53 @@ function renderUsers(){
       ${people}
     </section>
     ${recruitSectionHTML()}
+    ${manualSectionHTML()}
     ${jobsSectionHTML()}
     ${formSectionHTML()}
   </div>`;
+}
+
+/* ---------- 工作清冊：連結「HR工作清冊」試算表（只讀） ---------- */
+const MC = {configured:null, url:'', name:'', sheet:'', count:0, lastSync:0, lastError:'', shareTo:'', draft:null, busy:false, msg:'', msgErr:false, confirmUnlink:false};
+function applyManualStatus(j){
+  if (!j || typeof j !== 'object') return;
+  MC.configured = !!j.configured;
+  if (typeof j.url === 'string') MC.url = j.url;
+  MC.name = typeof j.name === 'string' ? j.name : MC.name; MC.sheet = typeof j.sheet === 'string' ? j.sheet : MC.sheet;
+  MC.count = Number(j.count) || 0; MC.lastSync = j.lastSync || 0; MC.lastError = j.lastError || '';
+  if (j.shareTo) MC.shareTo = j.shareTo;
+}
+function manualSectionHTML(){
+  const when = ms => ms ? new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '還沒同步過';
+  const status = !FS.loaded ? '讀取中…'
+    : MC.configured ? `已連結「${MC.name || 'HR工作清冊'}」的「${MC.sheet || '工作清冊'}」分頁・上次同步 ${when(MC.lastSync)}・每 10 分鐘自動同步${MC.lastSync ? `（${MC.count} 項工作）` : ''}`
+    : '尚未連結：「例行工作」只有在 App 裡新增的項目，「工作手冊」頁是空的。';
+  const url = MC.draft != null ? MC.draft : MC.url;
+  return `<section class="ov-card" aria-labelledby="mc-h"><header class="ov-h"><h2 id="mc-h">工作清冊（例行工作與工作手冊）</h2></header>
+    <p class="muted">貼上 hr@cheeseduke.com.tw 的「HR工作清冊」試算表網址（讀「工作清冊」分頁）。要先用擁有試算表的帳號，把試算表共用給 <b>${esc(MC.shareTo || FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。App 只讀不寫：每日、每週、每月、每年的項目會出現在「例行工作」可以打勾，全部工作的說明與程序在「工作手冊」，清冊裡寫的到期日會在總覽提醒。項目要新增或修改，請改試算表。</p>
+    <p class="${MC.configured ? '' : 'muted'}">${esc(status)}</p>
+    ${MC.lastError ? `<p class="imp-msg err">上次同步失敗：${esc(MC.lastError)}</p>` : ''}
+    <div class="fl-row">
+      <input class="inp" id="mc-url" type="url" value="${esc(url)}" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="HR工作清冊試算表網址">
+      <button class="btn primary" type="button" data-u="mc-link"${MC.busy ? ' disabled' : ''}>${MC.configured ? '重新連結' : '連結'}</button>
+    </div>
+    ${MC.msg ? `<p class="imp-msg${MC.msgErr ? ' err' : ''}" role="status">${esc(MC.msg)}</p>` : ''}
+    ${MC.configured ? `<div class="fl-row">${MC.confirmUnlink
+      ? '<span class="confirm-q" style="width:auto">確定取消連結？例行工作裡清冊的項目和工作手冊會清空（打勾紀錄留著），試算表不受影響。</span><button class="btn sm danger-solid" type="button" data-u="mc-unlink-yes">取消連結</button><button class="btn sm ghost" type="button" data-u="mc-cancel">不要</button>'
+      : `<button class="btn sm" type="button" data-u="mc-sync"${MC.busy ? ' disabled' : ''}>立即同步</button><button class="btn sm ghost danger" type="button" data-u="mc-unlink">取消連結</button>`}</div>` : ''}
+  </section>`;
+}
+async function manualAdmin(action, payload, okMsg){
+  MC.busy = true; MC.msg = action === 'manualLink' ? '連結中…' : '處理中…'; MC.msgErr = false; renderUsers();
+  try {
+    const j = await AU.api(action, payload || {});
+    if (action === 'formSync') applyFormStatus(j); else applyManualStatus(j);
+    const st = action === 'formSync' ? j.mc : j;
+    MC.draft = null; MC.confirmUnlink = false;
+    MC.msg = okMsg(st || {}); MC.msgErr = !!(st && st.lastError);
+    ST.syncNow();
+  } catch (e) { MC.msg = e.message; MC.msgErr = true; }
+  MC.busy = false; renderUsers();
 }
 
 /* ---------- 職缺條件（管理員編輯；打到一半的內容存在 JE.drafts，畫面重畫不會不見） ---------- */
@@ -1207,6 +1363,7 @@ function applyFormStatus(j){
   if (typeof j.url === 'string') FS.url = j.url;
   if (j.shareTo) FS.shareTo = j.shareTo;
   if (j.rc) applyRecruitStatus(j.rc);
+  if (j.mc) applyManualStatus(j.mc);
   FS.loaded = true;
 }
 async function formSync(force){
@@ -1217,7 +1374,7 @@ async function formSync(force){
     const j = await AU.api('formSync', force ? {force:true} : {});
     applyFormStatus(j);
     if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試」`); ST.syncNow(); }
-    else if (j.updated || (j.rc && j.rc.changed)) ST.syncNow();
+    else if (j.updated || (j.rc && j.rc.changed) || (j.mc && j.mc.changed)) ST.syncNow();
     if (S.view === 'users') renderUsers();
   } catch (e) { /* 同步失敗不打擾使用者，下次再試 */ }
 }
@@ -1227,7 +1384,7 @@ async function loadFormStatus(){
     const j = await AU.api('formSync', {});
     applyFormStatus(j);
     if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試」`); ST.syncNow(); }
-    else if (j.rc && j.rc.changed) ST.syncNow();
+    else if ((j.rc && j.rc.changed) || (j.mc && j.mc.changed)) ST.syncNow();
   } catch (e) { FS.msg = e.message; FS.msgErr = true; }
   FS.loading = false; FS.loaded = true;
   if (S.view === 'users') renderUsers();
@@ -1238,7 +1395,7 @@ function formSectionHTML(){
   const src = FS.mode === 'docs' ? '人事資料表文件' : FS.mode === 'sheet' ? '回覆試算表' : '';
   const status = !FS.loaded ? '讀取中…'
     : FS.configured ? `已連結「${FS.sheetName || '資料夾'}」${src ? `（${src}）` : ''}・上次同步 ${when(FS.lastSync)}・每 10 分鐘自動同步`
-    : '尚未連結：新的應徵者要用「匯入表單回覆」手動匯入。';
+    : '尚未連結：人事資料表的回覆不會自動進看板（線上應徵表單的資料仍會直接進來）。';
   const days = FS.draftDays != null ? FS.draftDays : FS.days;
   const url = FS.draft != null ? FS.draft : FS.url;
   const opt = (v, t) => `<option value="${v}"${Number(days) === v ? ' selected' : ''}>${t}</option>`;
@@ -1717,6 +1874,7 @@ function render(){
   if (S.view === 'overview') renderOverview();
   else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
+  else if (S.view === 'manual') renderManual();
   else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
@@ -1729,7 +1887,7 @@ function setView(v){
   if (location.hash.slice(1) !== S.view) { try { history.replaceState(null, '', '#' + S.view); } catch {} }
   render();
   window.scrollTo(0, 0);
-  if (['recruit','pipeline','overview'].includes(S.view)) formSync();
+  if (['recruit','pipeline','overview','routine','manual'].includes(S.view)) formSync();
 }
 
 /* ================= 事件 ================= */
@@ -1746,7 +1904,6 @@ function shiftMonth(delta){
   render();
 }
 $('#q').addEventListener('input', e => { S.q = e.target.value.trim(); renderTabs(); renderBoard(); });
-$('#add-btn').addEventListener('click', openCreate);
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; S.tabs[curBoard()] = b.dataset.tab; renderTabs(); renderBoard(); });
 $('#batch-btn').addEventListener('click', () => setBatch(!S.batch));
 $('#batch-bar').addEventListener('change', e => { if (e.target.id === 'batch-date') S.batchDate = e.target.value; });
@@ -1787,6 +1944,8 @@ $('#board').addEventListener('click', e => {
   else if (act === 'join-no') confirmJoin(id, false);
 });
 $('#overview-view').addEventListener('click', e => {
+  const mg = e.target.closest('[data-mn-go]');
+  if (mg) { S.mnFocus = mg.dataset.mnGo; S.mnOpen.add(S.mnFocus); setView('manual'); return; }
   if (e.target.closest('[data-slots]')) { openSlots(); return; }
   const g = e.target.closest('[data-go]');
   if (g) { const tb = g.dataset.tab; if (tb && BOARD_OF[tb]) S.tabs[BOARD_OF[tb]] = tb; setView(g.dataset.go); return; }
@@ -1850,8 +2009,18 @@ $('#users-view').addEventListener('click', e => {
   else if (act === 'rc-unlink') { RC.confirmUnlink = true; renderUsers(); }
   else if (act === 'rc-unlink-yes') recruitAdmin('recruitUnlink', {}, () => '已取消連結。');
   else if (act === 'rc-cancel') { RC.confirmUnlink = false; renderUsers(); }
+  else if (act === 'mc-link') {
+    const url = $('#mc-url').value.trim();
+    MC.draft = url;
+    if (!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(url)) { MC.msg = '請貼「HR工作清冊」Google 試算表的網址（https://docs.google.com/spreadsheets/…）。'; MC.msgErr = true; renderUsers(); return; }
+    manualAdmin('manualLink', {url}, j => j.lastError ? '已連結，但讀取失敗，原因見上方。' : `已連結，讀到 ${j.count | 0} 項工作。`);
+  }
+  else if (act === 'mc-sync') manualAdmin('formSync', {force:true}, j => j.lastError ? '同步失敗，原因見上方。' : j.changed ? '已同步，有新的變動。' : '已同步，工作清冊沒有新的變動。');
+  else if (act === 'mc-unlink') { MC.confirmUnlink = true; renderUsers(); }
+  else if (act === 'mc-unlink-yes') manualAdmin('manualUnlink', {}, () => '已取消連結。');
+  else if (act === 'mc-cancel') { MC.confirmUnlink = false; renderUsers(); }
 });
-$('#users-view').addEventListener('input', e => { if (e.target.id === 'fl-url') FS.draft = e.target.value; else if (e.target.id === 'rc-url') RC.draft = e.target.value; });
+$('#users-view').addEventListener('input', e => { if (e.target.id === 'fl-url') FS.draft = e.target.value; else if (e.target.id === 'rc-url') RC.draft = e.target.value; else if (e.target.id === 'mc-url') MC.draft = e.target.value; });
 $('#users-view').addEventListener('change', e => { if (e.target.id === 'fl-days') FS.draftDays = Number(e.target.value); });
 $('#umodal').addEventListener('click', e => { if (e.target.closest('[data-u-close]')) closeUserForm(); });
 $('#u-form').addEventListener('submit', async e => {
@@ -1899,6 +2068,15 @@ $('#drawer').addEventListener('click', e => {
   }
 });
 $('#d-close').addEventListener('click', () => closeDrawer());
+$('#manual-view').addEventListener('input', e => { if (e.target.id === 'mn-q') { S.mnQ = e.target.value.trim(); renderManual(); } });
+$('#manual-view').addEventListener('toggle', e => { const d = e.target; if (d.matches && d.matches('details.mn-item')) { if (d.open) S.mnOpen.add(d.dataset.mn); else S.mnOpen.delete(d.dataset.mn); } }, true);
+document.addEventListener('click', e => {
+  const c = e.target.closest('[data-copy]');
+  if (!c) return;
+  const v = c.dataset.copy;
+  Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(v)).then(() => toast('已複製路徑')).catch(() => toast('無法自動複製，請手動選取'));
+});
+$('#routine-view').addEventListener('click', e => { const b = e.target.closest('[data-mn-open]'); if (!b) return; const id = b.dataset.mnOpen; if (S.rtMn.has(id)) S.rtMn.delete(id); else S.rtMn.add(id); renderRoutine(); });
 $('#d-job').addEventListener('change', e => {
   const id = S.openId, t = e.target;
   if (!id || S.creating || !canEdit() || !S.hires.has(id)) return;
@@ -1966,7 +2144,6 @@ document.addEventListener('keydown', e => {
   else if (!$('#imp').hidden) closeImport();
   else if (!$('#drawer').hidden) closeDrawer();
 });
-$('#imp-btn').addEventListener('click', openImport);
 $('#slot-btn').addEventListener('click', openSlots);
 $('#slm').addEventListener('click', e => {
   if (e.target.closest('[data-sl-close]')) { closeSlots(); return; }
