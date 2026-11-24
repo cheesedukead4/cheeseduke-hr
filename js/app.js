@@ -222,7 +222,7 @@ function cleanRow(r){
     id:String(r.id), src:r.src, name:s(r.name, 40), job:s(r.job, 80), plat:s(r.plat, 20), tier:s(r.tier, 10),
     at: isDT(r.at) ? r.at : '', score: typeof r.score === 'number' && isFinite(r.score) ? r.score : null,
     sum:s(r.sum, 300), why:s(r.why, 300), st:s(r.st, 40), type:s(r.type, 20), cv:httpsUrl(r.cv), mail:httpsUrl(r.mail),
-    ivD: isDate(r.ivD) ? r.ivD : '', ivT: isHM(r.ivT) ? r.ivT : '', formSt:s(r.formSt, 20), formFill:s(r.formFill, 20),
+    ivD: isDate(r.ivD) ? r.ivD : '', ivT: isHM(r.ivT) ? r.ivT : '', formSt:s(r.formSt, 20), formFill:s(r.formFill, 20), ev:s(r.ev, 20),
     doc: validFileId(r.doc) ? r.doc : '', res:s(r.res, 20), iv2:s(r.iv2, 40), dec:s(r.dec, 20), n104:s(r.n104, 80), offer:s(r.offer, 30),
     start: isDate(r.start) ? r.start : '', startRaw:s(r.startRaw, 30), dept:s(r.dept, 30), title:s(r.title, 40), time:s(r.time, 30),
     place:s(r.place, 60), boss:s(r.boss, 30), pdf:httpsUrl(r.pdf), note:s(r.note, 200)
@@ -260,8 +260,14 @@ function extFor(h){
 /** 這列試算表資料已經是看板上的人了嗎（姓名相同、日期相近） */
 const rowHired = r => (R.hireByName.get(normName(r.name)) || []).some(h => !isDate(rowDay(r)) || near(hireDay(h), rowDay(r)));
 const screenTaken = r => rowHired(r) || R.invite.some(i => (r.cv && i.cv === r.cv) || (normName(i.name) === normName(r.name) && near(rowDay(i), rowDay(r))));
-const inviteBooked = r => /^已預約/.test(r.st);
-const inviteCancel = r => /取消/.test(r.st);
+/* 104「聯絡訊息」的事件進度（試算表「面試邀約」的「104事件進度」欄）優先；沒有這一欄或空白時看「邀約結果」 */
+const EV_CANCEL = /^(無意願|面試婉拒|面試取消)$/;
+const inviteDone = r => /^(感謝函|到職日期提醒)/.test(r.ev);   // 已經過了面試這一關，不放在前三欄
+const inviteCancel = r => EV_CANCEL.test(r.ev) || /取消/.test(r.st);
+const inviteBooked = r => !inviteCancel(r) && !inviteDone(r) && (r.ev === '面試同意' || /^已預約/.test(r.st));
+const inviteWaiting = r => !inviteCancel(r) && !inviteDone(r) && !inviteBooked(r);
+const evCls = ev => /同意|有意願/.test(ev) ? 'ok' : /未回覆/.test(ev) ? 'warn' : /婉拒|取消|無意願/.test(ev) ? 'danger' : '';
+const evChip = ev => ev ? chip(`104：${ev}`, evCls(ev)) : '';
 const TIER_RANK = {'推薦面試':0, '可評估':1, '不推薦':2};   // 和 AI 篩選規則相同：80 分以上、60–79、59 以下
 /** 招募前三欄的卡片；useQ＝套用搜尋框 */
 function extItems(key, useQ = true){
@@ -274,7 +280,7 @@ function extItems(key, useQ = true){
   }
   if (key === 'x_invite') {
     const floor = addDays(t, -RC_DAYS.invite);
-    return R.invite.filter(r => !inviteBooked(r) && !inviteCancel(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
+    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_booked') {
     return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14)))
@@ -739,6 +745,7 @@ function extCardHTML(r, key){
   } else {
     if (r.ivD) chips.push(r.ivD === t ? chip(`今天 ${r.ivT} 面試`, 'warn') : chip(`面試 ${md(r.ivD)}${r.ivT ? ' ' + r.ivT : ''}`, r.ivD < t ? 'warn' : ''));
     else if (r.at) chips.push(chip(`${shortDT(r.at)} 送出邀約`));
+    if (r.ev) chips.push(evChip(r.ev));
     if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
     if (r.plat) chips.push(chip(r.plat));
   }
@@ -761,6 +768,7 @@ function cardHTML(h){
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
     const dc = sheetDecChip(h); if (dc) chips.push(dc);
+    const iev = (extFor(h).invite || {}).ev || ''; if (/婉拒|取消|無意願/.test(iev)) chips.push(evChip(iev));
     const jb = h.crit.ok.length ? jobFor(h) : null;
     if (jb) { const c = critCount(h, jb); chips.push(chip(`條件 ${c.n}/${c.of}`, c.of && c.n / c.of >= 0.8 ? 'ok' : '')); }
     if (canW) acts.push(
@@ -778,6 +786,7 @@ function cardHTML(h){
   } else if (h.stage === 'offer') {
     const rs = extFor(h).result;
     chips.push(startChip(h));
+    const oev = (extFor(h).invite || {}).ev || ''; if (/^到職日期提醒/.test(oev)) chips.push(chip(`104 報到：${oev.replace('到職日期提醒', '')}`, evCls(oev)));
     if (rs && rs.offer) chips.push(chip(`Offer ${rs.offer}`, rs.offer === '已寄出' ? 'ok' : /未寄送/.test(rs.offer) ? 'warn' : ''));
     if (rs && rs.pdf) acts.push(`<a class="btn sm" href="${esc(rs.pdf)}" target="_blank" rel="noopener">Offer PDF ↗</a>`);
     if (canW) acts.push(`<button class="btn sm primary" type="button" data-act="advance" data-id="${id}">${ADV_LABEL.offer}</button>`);
@@ -1491,7 +1500,7 @@ function extHTML(h){
   const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
   const links = [extLink((rs && rs.cv) || (iv && iv.cv) || (sc && sc.cv), '104 履歷'), extLink(sc && sc.mail, 'Gmail'), extLink(rs && rs.pdf, 'Offer PDF')].filter(Boolean).join('');
   const body = (sc ? row('AI 篩選', sc.tier + (sc.score != null ? `・${sc.score} 分` : '')) + row('履歷重點', sc.sum) + row('AI 說明', sc.why) : '')
-    + (iv ? row('邀約', [iv.plat, iv.st].filter(Boolean).join('・')) + row('面試時間', iv.ivD ? `${slash(iv.ivD)} ${iv.ivT}` : '') + row('人事資料表', [iv.formSt && '表單' + iv.formSt, iv.formFill].filter(Boolean).join('・')) : '')
+    + (iv ? row('邀約', [iv.plat, iv.st].filter(Boolean).join('・')) + row('104 事件進度', iv.ev) + row('面試時間', iv.ivD ? `${slash(iv.ivD)} ${iv.ivT}` : '') + row('人事資料表', [iv.formSt && '表單' + iv.formSt, iv.formFill].filter(Boolean).join('・')) : '')
     + (rs ? row('面試結果', rs.res) + row('二面', rs.iv2) + row('錄取決策', rs.dec) + row('104 通知', rs.n104) + row('Offer', rs.offer)
       + row('預計報到', rs.start ? slash(rs.start) : rs.startRaw) + row('報到安排', [rs.dept, rs.title, rs.time, rs.place, rs.boss && '主管 ' + rs.boss].filter(Boolean).join('・')) + row('備註', rs.note) : '');
   return `<section class="sec"><h3>招募進度 <span class="h-count">「履歷篩選」試算表・只能看</span></h3>
