@@ -147,7 +147,8 @@ function norm(id, d){
     docs, steps:obj(d.steps), createdAt: typeof d.createdAt === 'number' ? d.createdAt : null, createdBy:str(d.createdBy),
     interviewer:str(d.interviewer), rating: RATING_KEYS.includes(d.rating) ? d.rating : '', comment:str(d.comment),
     ivAt: typeof d.ivAt === 'number' ? d.ivAt : null, ivBy:str(d.ivBy),
-    form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null
+    form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
+    docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : ''
   };
 }
 function normForm(f){
@@ -647,12 +648,85 @@ function renderUsers(){
     people = admins + rows + (U.list.length ? '' : '<p class="rt-empty">還沒有加入任何同事。按「＋ 新增人員」，輸入同事的 Gmail 並勾選權限。</p>') + (U.loading ? '<p class="rt-empty">更新中…</p>' : '');
   }
   root.innerHTML = `<div class="adm">
-    <h1>人員與權限</h1>
-    <section class="ov-card"><header class="ov-h"><h2>名單</h2><span class="sp"></span><button class="btn primary" type="button" data-u="add">＋ 新增人員</button></header>
+    <h1>管理</h1>
+    <section class="ov-card"><header class="ov-h"><h2>人員與權限</h2><span class="sp"></span><button class="btn primary" type="button" data-u="add">＋ 新增人員</button></header>
       <p class="muted">用 Gmail 加入同事。名單內的人都能查看人事資料與打勾例行工作；其他動作依勾選的權限。</p>
       ${people}
     </section>
+    ${formSectionHTML()}
   </div>`;
+}
+
+/* ---------- 人事資料表自動匯入（管理員連結雲端硬碟資料夾） ---------- */
+const FS = {configured:null, url:'', sheetName:'', mode:'', lastSync:0, lastError:'', days:30, shareTo:'', draft:null, draftDays:null, busy:false, msg:'', msgErr:false, confirmUnlink:false, loaded:false};
+let formSyncAt = 0;
+function applyFormStatus(j){
+  if (!j || typeof j !== 'object') return;
+  FS.configured = !!j.configured;
+  FS.lastSync = j.lastSync || 0; FS.lastError = j.lastError || ''; FS.sheetName = j.sheetName || ''; FS.mode = j.mode || '';
+  if (typeof j.days === 'number') FS.days = j.days;
+  if (typeof j.url === 'string') FS.url = j.url;
+  if (j.shareTo) FS.shareTo = j.shareTo;
+  FS.loaded = true;
+}
+async function formSync(force){
+  if (!AU || !AU.user() || navigator.onLine === false) return;
+  if (!force && Date.now() - formSyncAt < 60000) return;
+  formSyncAt = Date.now();
+  try {
+    const j = await AU.api('formSync', force ? {force:true} : {});
+    applyFormStatus(j);
+    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試資料」`); ST.syncNow(); }
+    else if (j.updated) ST.syncNow();
+    if (S.view === 'users') renderUsers();
+  } catch (e) { /* 同步失敗不打擾使用者，下次再試 */ }
+}
+async function loadFormStatus(){
+  FS.loading = true;
+  try {
+    const j = await AU.api('formSync', {});
+    applyFormStatus(j);
+    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試資料」`); ST.syncNow(); }
+  } catch (e) { FS.msg = e.message; FS.msgErr = true; }
+  FS.loading = false; FS.loaded = true;
+  if (S.view === 'users') renderUsers();
+}
+function formSectionHTML(){
+  if (!FS.loaded && !FS.loading) setTimeout(loadFormStatus, 0);
+  const when = ms => ms ? new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '還沒同步過';
+  const src = FS.mode === 'docs' ? '人事資料表文件' : FS.mode === 'sheet' ? '回覆試算表' : '';
+  const status = !FS.loaded ? '讀取中…'
+    : FS.configured ? `已連結「${FS.sheetName || '資料夾'}」${src ? `（${src}）` : ''}・上次同步 ${when(FS.lastSync)}・每 10 分鐘自動同步`
+    : '尚未連結：新的應徵者要用「匯入表單回覆」手動匯入。';
+  const days = FS.draftDays != null ? FS.draftDays : FS.days;
+  const url = FS.draft != null ? FS.draft : FS.url;
+  const opt = (v, t) => `<option value="${v}"${Number(days) === v ? ' selected' : ''}>${t}</option>`;
+  return `<section class="ov-card" aria-labelledby="fl-h"><header class="ov-h"><h2 id="fl-h">人事資料表自動匯入</h2></header>
+    <p class="muted">貼上放「人事資料表文件」的雲端硬碟資料夾網址（或表單的回覆試算表）。要先用擁有資料夾的帳號，把資料夾共用給 <b>${esc(FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。之後每 10 分鐘、以及有人打開 App 時，新的應徵者會自動加進「面試資料」；文件之後被修改，App 裡的資料也會跟著更新（評語、進度不會被蓋掉）。</p>
+    <p class="${FS.configured ? '' : 'muted'}">${esc(status)}</p>
+    ${FS.lastError ? `<p class="imp-msg err">上次同步失敗：${esc(FS.lastError)}</p>` : ''}
+    <div class="fl-row">
+      <input class="inp" id="fl-url" type="url" value="${esc(url)}" placeholder="https://drive.google.com/drive/folders/…" aria-label="資料夾或試算表網址">
+      <select class="inp" id="fl-days" aria-label="第一次匯入的範圍">${opt(30, '最近 30 天')}${opt(90, '最近 90 天')}${opt(0, '全部')}</select>
+      <button class="btn primary" type="button" data-u="fl-link"${FS.busy ? ' disabled' : ''}>${FS.configured ? '重新連結' : '連結'}</button>
+    </div>
+    <p class="muted">第一次連結只匯入所選範圍內的資料；之後只加新的，在看板上刪掉的人不會被加回來。</p>
+    ${FS.msg ? `<p class="imp-msg${FS.msgErr ? ' err' : ''}" role="status">${esc(FS.msg)}</p>` : ''}
+    ${FS.configured ? `<div class="fl-row">${FS.confirmUnlink
+      ? '<span class="confirm-q" style="width:auto">確定取消連結？已匯入的資料會留著。</span><button class="btn sm danger-solid" type="button" data-u="fl-unlink-yes">取消連結</button><button class="btn sm ghost" type="button" data-u="fl-cancel">不要</button>'
+      : `<button class="btn sm" type="button" data-u="fl-sync"${FS.busy ? ' disabled' : ''}>立即同步</button><button class="btn sm ghost danger" type="button" data-u="fl-unlink">取消連結</button>`}</div>` : ''}
+  </section>`;
+}
+async function formAdmin(action, payload, okMsg){
+  FS.busy = true; FS.msg = action === 'formLink' ? '連結中，第一次讀取資料夾可能要一兩分鐘…' : '處理中…'; FS.msgErr = false; renderUsers();
+  try {
+    const j = await AU.api(action, payload || {});
+    applyFormStatus(j);
+    FS.draft = null; FS.draftDays = null; FS.confirmUnlink = false;
+    FS.msg = okMsg(j); FS.msgErr = false;
+    if (j.added || j.updated) ST.syncNow();
+  } catch (e) { FS.msg = e.message; FS.msgErr = true; }
+  FS.busy = false; renderUsers();
 }
 function openUserForm(u){
   U.editing = u ? u.email : null;
@@ -787,7 +861,7 @@ function formDataHTML(h){
     ? jobs.map(j => `<div class="job">${j.co ? `<div class="job-h">${esc(j.co)}</div>` : ''}<dl class="fd">${row('工作時間', j.time)}${row('內容與薪資', j.desc)}${row('離職原因', j.leave)}</dl></div>`).join('')
     : '<p class="fd-small">未填寫</p>';
   const filled = h.formAt ? `應徵者於 ${fmtTime(h.formAt)} 填寫` : (F.ts ? `填寫時間 ${F.ts}` : '');
-  return `<section class="sec fdata"><h3>面試資料 <span class="h-count">${esc(filled)}</span></h3>
+  return `<section class="sec fdata"><h3>面試資料 <span class="h-count">${esc(filled)}</span>${h.docUrl ? `<a class="link doc-link" href="${esc(h.docUrl)}" target="_blank" rel="noopener">開啟原始文件 ↗</a>` : ''}</h3>
     ${key.length ? `<div class="fd-key">${key.map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join('')}</div>` : ''}
     <h4>基本資料</h4>${dl(row('應徵職務', F.position) + row('姓名', F.name) + row('性別', F.gender) + row('出生年月日', birth) + row('兵役狀況', F.military) + row('身分狀態', F.identity) + rowHTML('身分證字號', idHTML))}
     <h4>聯絡資料</h4>${dl(row('手機', F.mobile) + row('家電', F.homePhone) + row('電子郵件', F.email || F.email2) + row('戶籍地址', F.addrReg) + row('通訊地址', F.addrMail))}
@@ -969,6 +1043,8 @@ function openImport(){
   if (!canEdit()) return;
   S.imp = {rows:[], sel:new Set()};
   $('#imp-paste').value = ''; $('#imp-file-name').textContent = ''; $('#imp-preview').innerHTML = '';
+  $('#imp-auto').textContent = FS.configured ? '人事資料表已設定自動匯入，新的應徵者會自己出現在「面試資料」。這裡用來補匯入較早的回覆。' : '';
+  $('#imp-auto').hidden = !FS.configured;
   setImpMsg(''); updateImpGo();
   $('#imp').hidden = false;
   document.documentElement.classList.add('lock');
@@ -1090,6 +1166,7 @@ function setView(v){
   if (location.hash.slice(1) !== S.view) { try { history.replaceState(null, '', '#' + S.view); } catch {} }
   render();
   window.scrollTo(0, 0);
+  if (S.view === 'pipeline' || S.view === 'overview') formSync();
 }
 
 /* ================= 事件 ================= */
@@ -1161,7 +1238,19 @@ $('#users-view').addEventListener('click', e => {
   else if (act === 'del' && u) { U.confirm = u.email; renderUsers(); }
   else if (act === 'del-yes' && u) userCall('userDelete', {email:u.email}, `已移除 ${u.email}`);
   else if (act === 'cancel') { U.confirm = null; renderUsers(); }
+  else if (act === 'fl-link') {
+    const url = $('#fl-url').value.trim(), days = Number($('#fl-days').value);
+    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) { FS.msg = '請貼 Google 雲端硬碟資料夾或試算表的網址。'; FS.msgErr = true; FS.draft = url; renderUsers(); return; }
+    FS.draft = url; FS.draftDays = days;
+    formAdmin('formLink', {url, days}, j => `已連結。這次匯入 ${j.added || 0} 筆${j.updated ? `、更新 ${j.updated} 筆` : ''}。`);
+  }
+  else if (act === 'fl-sync') formAdmin('formSync', {force:true}, j => j.lastError ? '同步失敗，原因見上方。' : `已同步，新增 ${j.added || 0} 筆${j.updated ? `、更新 ${j.updated} 筆` : ''}。`);
+  else if (act === 'fl-unlink') { FS.confirmUnlink = true; renderUsers(); }
+  else if (act === 'fl-unlink-yes') formAdmin('formUnlink', {}, () => '已取消連結，已匯入的資料都還在。');
+  else if (act === 'fl-cancel') { FS.confirmUnlink = false; renderUsers(); }
 });
+$('#users-view').addEventListener('input', e => { if (e.target.id === 'fl-url') FS.draft = e.target.value; });
+$('#users-view').addEventListener('change', e => { if (e.target.id === 'fl-days') FS.draftDays = Number(e.target.value); });
 $('#umodal').addEventListener('click', e => { if (e.target.closest('[data-u-close]')) closeUserForm(); });
 $('#u-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1287,7 +1376,9 @@ ST.on(type => {
 AU.on(() => { U.list = null; schedule(); });
 S.view = viewFromHash();
 pullFromStore(); render();
-AU.ready.then(() => { S.view = viewFromHash(); pullFromStore(); render(); });
+AU.ready.then(() => { S.view = viewFromHash(); pullFromStore(); render(); formSync(); });
+// 打開 App、切回 App 時順便同步人事資料表（雲端後端另外每 10 分鐘同步一次）
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') formSync(); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => { navigator.serviceWorker.register('service-worker.js').catch(() => {}); });
 }

@@ -345,6 +345,10 @@ button.thumb:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .permopt input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--accent)}
 .permopt span{display:flex;flex-direction:column;gap:2px}
 .permopt small{color:var(--ink-3);font-size:12px}
+.fl-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fl-row #fl-url{flex:1 1 260px}
+.fl-row select.inp{height:36px}
+.doc-link{margin-left:auto;font-size:12.5px;letter-spacing:0;font-weight:500}
 
 /* modals: import, user */
 .modal{position:fixed;inset:0;z-index:55;display:grid;place-items:center;padding:calc(env(safe-area-inset-top,0px) + 16px) max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 16px) max(16px,env(safe-area-inset-left,0px))}
