@@ -1,10 +1,13 @@
 /*
  * 人事工作看板｜全部畫面
  * ---------------------------------------------------------------
- * 頁面（網址 #overview #pipeline #routine #users）：總覽、新進人員・勞健保、例行工作、管理（只有管理員）。
+ * 頁面（網址 #overview #recruit #pipeline #routine #users）：總覽、招募、新進人員・勞健保、例行工作、管理（只有管理員）。
+ * 流程（白板）：Gmail 撈履歷 → AI 篩選 → 邀約（選時 → 人事表）→ 面試（錄／不錄）→ 確認入職（要／不要）→ Offer → 報到 → 證件 → APOLLO → 勞健保。
+ *   「招募」頁前三欄（履歷篩選、邀約中、已約面試）是 hr@ 的「履歷篩選」試算表的進度：雲端後端每 10 分鐘讀一次存成 recruit，這裡只能看；
+ *   應徵者的人事資料表進來（自動匯入或線上應徵）後才變成看板上的人（hires），從「面試」開始由 App 推進。
  * 資料（HRStore，見 cloud-store.js），每一筆都有 id：
  *   hires     { id, name, position, dept, phone, note, interviewDate, startDate (YYYY-MM-DD),
- *               stage: interview|docs|apollo_up|apollo_down|insurance|done|rejected, result: pending|hired|rejected,
+ *               stage: interview|confirm|offer|docs|apollo_up|apollo_down|insurance|done|rejected|declined, result: pending|hired|rejected,
  *               steps: { 步驟: { at, by } }（完成該步驟的時間與人；退回時刪掉）,
  *               docs: { id_front|id_back|bank|other_*: { id: 雲端檔案 id, mime, at, by } }（檔案在雲端後端「證件照片」資料夾）,
  *               interviewer, rating: A|B|C|D, comment, ivAt, ivBy（面試紀錄）,
@@ -12,6 +15,8 @@
  *               createdAt, createdBy, updatedAt, updatedBy }
  *   routines  { id, freq: daily|weekly|monthly, title, due, order, createdAt, createdBy }
  *   checks    { id: d-YYYY-MM-DD | w-YYYY-Www | m-YYYY-MM, date: 期間第一天, freq, done: { 項目 id: { at, by } } }
+ *   recruit   （只能讀，雲端後端寫）{ id, src: screen 篩選名單 | invite 面試邀約 | result 面試結果追蹤 | meta, name, job, ... }
+ *             對到看板上的人：result 用「資料表連結」的文件 id（= hires 的 doc-文件id），其他用姓名＋日期相近（extFor）。
  * 權限（HRAuth.can）：edit 人事資料編輯、pii 查看證件、routine 例行工作設定；管理員全部都有。
  *   這是畫面權限：雲端後端擋的是「不在名單的人」；證件照片另外由後端檢查 pii。例行工作每個人都能打勾。
  */
@@ -21,39 +26,58 @@ const AU = window.HRAuth, ST = window.HRStore;
 
 /* ================= 定義 ================= */
 const STAGES = [
-  {key:'interview',   n:1, title:'面試資料',    hint:'等待面試結果'},
-  {key:'docs',        n:2, title:'錄取・證件',  hint:'拍照上傳證件'},
-  {key:'apollo_up',   n:3, title:'APOLLO 上傳', hint:'人事資料上傳 APOLLO'},
-  {key:'apollo_down', n:4, title:'APOLLO 下載', hint:'自 APOLLO 下載檔案'},
-  {key:'insurance',   n:5, title:'勞健保上傳',  hint:'申報勞健保加保'},
-  {key:'done',        n:0, title:'已完成',      hint:''}
+  {key:'x_screen',    board:'recruit',  n:1, title:'履歷篩選',    hint:'Gmail 收到、AI 已分級的履歷'},
+  {key:'x_invite',    board:'recruit',  n:2, title:'邀約中',      hint:'已送出邀約，等應徵者選時間'},
+  {key:'x_booked',    board:'recruit',  n:3, title:'已約面試',    hint:'已選時間，等填人事資料表'},
+  {key:'interview',   board:'recruit',  n:4, title:'面試',        hint:'面試後決定錄取或不錄取'},
+  {key:'confirm',     board:'recruit',  n:5, title:'確認入職',    hint:'錄取後確認要不要來'},
+  {key:'offer',       board:'recruit',  n:6, title:'Offer',       hint:'寄 Offer，等報到'},
+  {key:'docs',        board:'pipeline', n:1, title:'報到・證件',  hint:'報到時拍照上傳證件'},
+  {key:'apollo_up',   board:'pipeline', n:2, title:'APOLLO 上傳', hint:'人事資料上傳 APOLLO'},
+  {key:'apollo_down', board:'pipeline', n:3, title:'APOLLO 下載', hint:'自 APOLLO 下載檔案'},
+  {key:'insurance',   board:'pipeline', n:4, title:'勞健保上傳',  hint:'申報勞健保加保'},
+  {key:'done',        board:'pipeline', n:0, title:'已完成',      hint:''}
 ];
-const FLOW = STAGES.map(s => s.key);
+const BOARDS = {recruit:STAGES.filter(s => s.board === 'recruit'), pipeline:STAGES.filter(s => s.board === 'pipeline')};
+const BOARD_OF = Object.fromEntries(STAGES.map(s => [s.key, s.board]));
+const FLOW = ['interview','confirm','offer','docs','apollo_up','apollo_down','insurance','done'];
+const EXT = ['x_screen','x_invite','x_booked'];   // 「履歷篩選」試算表的進度（只能看）
 const ACTIVE = ['docs','apollo_up','apollo_down','insurance'];
-const TITLE = {interview:'面試資料',docs:'錄取・證件',apollo_up:'APOLLO 上傳',apollo_down:'APOLLO 下載',insurance:'勞健保上傳',done:'已完成',rejected:'未錄取'};
-const STEP_DEFS = [
+const TITLE = Object.assign(Object.fromEntries(STAGES.map(s => [s.key, s.title])), {rejected:'未錄取', declined:'婉拒入職'});
+const STEP_DEFS = [   // 和 FLOW 前 7 步一一對應
   {key:'interview',   label:'面試結果'},
-  {key:'docs',        label:'錄取・證件上傳'},
+  {key:'confirm',     label:'確認入職'},
+  {key:'offer',       label:'Offer・等報到'},
+  {key:'docs',        label:'報到・證件上傳'},
   {key:'apollo_up',   label:'APOLLO 上傳'},
   {key:'apollo_down', label:'APOLLO 下載'},
   {key:'insurance',   label:'勞健保上傳（加保）'}
 ];
+const STEP_DONE = {interview:'面試結果：錄取', confirm:'確認入職：要來', offer:'Offer・已報到'};
 const STEP_HINT = {
   interview:'確認面試結果後，按「錄取」或「未錄取」。',
+  confirm:'和應徵者確認要不要來：要 → 寄 Offer；不要 → 婉拒入職。',
+  offer:'在「履歷篩選」試算表寄出 Offer、確認報到日；報到當天按「已報到」。',
   docs:'拍照上傳身分證／居留證正反面，存摺封面可一併上傳。',
   apollo_up:'將新人人事資料上傳至 APOLLO。',
   apollo_down:'自 APOLLO 下載加保所需檔案。',
   insurance:'至勞保局 e 化服務系統申報勞保、就保、健保加保。'
 };
-const ADV_LABEL = {docs:'證件齊全，下一步', apollo_up:'已上傳 APOLLO', apollo_down:'已下載', insurance:'已完成加保'};
+const ADV_LABEL = {offer:'已報到 →', docs:'證件齊全，下一步', apollo_up:'已上傳 APOLLO', apollo_down:'已下載', insurance:'已完成加保'};
 const EMPTY = {
-  interview:'按「新增面試者」或「匯入表單回覆」',
-  docs:'錄取後的新人會出現在這裡',
+  x_screen:'最近 14 天沒有新的履歷',
+  x_invite:'沒有等回覆的邀約',
+  x_booked:'沒有已約面試、還沒填人事資料表的人',
+  interview:'人事資料表進來的應徵者會出現在這裡',
+  confirm:'錄取的人會出現在這裡',
+  offer:'確認要來的人會出現在這裡',
+  docs:'按「已報到」的新人會出現在這裡',
   apollo_up:'證件齊全的新人會移到這裡',
   apollo_down:'已上傳 APOLLO 的新人',
   insurance:'等待申報勞健保的新人',
   done:'這個月還沒有人完成加保'
 };
+const RC_DAYS = {screen:14, invite:21, booked:3, cancel:30, match:45};   // 招募三欄顯示的天數、對人時日期相差幾天內算同一人
 const DOC_SLOTS = [
   {key:'id_front', label:'身分證／居留證 正面', required:true},
   {key:'id_back',  label:'身分證／居留證 反面', required:true},
@@ -74,7 +98,8 @@ const PERMS = [
   {id:'routine', label:'例行工作設定', desc:'新增、修改、刪除每日／每週／每月項目（打勾不需要權限）'}
 ];
 const PERM_LABEL = Object.fromEntries(PERMS.map(p => [p.id, p.label]));
-const VIEWS = ['overview','pipeline','routine','users'];
+const VIEWS = ['overview','recruit','pipeline','routine','users'];
+const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', users:'users'}; // 招募與新進人員共用同一個看板畫面
 
 /* 起士公爵人事資料表：回覆試算表的標題（去掉空白）→ 欄位，同名欄位依出現順序對應 */
 const COLS = {
@@ -124,7 +149,7 @@ const myName = () => (AU && (AU.name() || AU.email())) || '我';
 /* ================= 狀態 ================= */
 const S = {
   hires:new Map(), routines:new Map(), checks:{daily:{done:{}}, weekly:{done:{}}, monthly:{done:{}}}, loaded:false,
-  month:curMonth(), q:'', tab:'interview', rejOpen:false, view:'overview',
+  month:curMonth(), q:'', tabs:{recruit:'interview', pipeline:'docs'}, open:{}, view:'overview',
   openId:null, creating:false, confirm:null, uploading:{}, pendingSlot:null, showId:false,
   rtEdit:{}, rtConfirm:null, imp:null,
   batch:false, sel:new Set(), batchConfirm:false, batchDate:''
@@ -134,7 +159,7 @@ const inMonth = s => !!s && s.slice(0,7) === S.month;
 
 function norm(id, d){
   d = obj(d);
-  const stage = (FLOW.includes(d.stage) || d.stage === 'rejected') ? d.stage : 'interview';
+  const stage = (FLOW.includes(d.stage) || d.stage === 'rejected' || d.stage === 'declined') ? d.stage : 'interview';
   const docs = {};
   for (const [k, v] of Object.entries(obj(d.docs))) {
     if (validDocKey(k) && v && typeof v === 'object' && validFileId(v.id)) {
@@ -171,8 +196,91 @@ function pullFromStore(){
   S.routines = new Map(ST.list('routines').map(d => [d.id, normRt(d.id, d)]).filter(([, r]) => r));
   const keys = periodKeys();
   for (const f of FREQS) { const rec = ST.get('checks', keys[f.key]); S.checks[f.key] = {done: rec ? obj(rec.done) : {}}; }
+  buildRecruit();
   S.loaded = !!ST.status().loaded;
 }
+
+/* ================= 招募進度（「履歷篩選」試算表，只能看） ================= */
+const R = {meta:null, screen:[], invite:[], result:[], byDoc:new Map(), byName:new Map(), hireByName:new Map(), ext:new Map()};
+const normName = s => String(s || '').replace(/[\s　]+/g, '').toLowerCase();
+const httpsUrl = u => (typeof u === 'string' && /^https:\/\/[^\s"'<>]+$/.test(u)) ? u : '';
+const isDT = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s);
+const isHM = s => typeof s === 'string' && /^\d{2}:\d{2}$/.test(s);
+const addDays = (d, n) => ymd(new Date(new Date(d + 'T00:00:00').getTime() + n * 86400000));
+const shortDT = s => isDT(s) ? `${md(s.slice(0, 10))} ${s.slice(11)}` : '';
+const rowDay = r => r.src === 'invite' ? (isDate(r.ivD) ? r.ivD : (r.at || '').slice(0, 10)) : r.src === 'result' ? r.ivD : (r.at || '').slice(0, 10);
+function cleanRow(r){
+  const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  return {
+    id:String(r.id), src:r.src, name:s(r.name, 40), job:s(r.job, 80), plat:s(r.plat, 20), tier:s(r.tier, 10),
+    at: isDT(r.at) ? r.at : '', score: typeof r.score === 'number' && isFinite(r.score) ? r.score : null,
+    sum:s(r.sum, 300), why:s(r.why, 300), st:s(r.st, 40), type:s(r.type, 20), cv:httpsUrl(r.cv), mail:httpsUrl(r.mail),
+    ivD: isDate(r.ivD) ? r.ivD : '', ivT: isHM(r.ivT) ? r.ivT : '', formSt:s(r.formSt, 20), formFill:s(r.formFill, 20),
+    doc: validFileId(r.doc) ? r.doc : '', res:s(r.res, 20), iv2:s(r.iv2, 40), dec:s(r.dec, 20), n104:s(r.n104, 80), offer:s(r.offer, 30),
+    start: isDate(r.start) ? r.start : '', startRaw:s(r.startRaw, 30), dept:s(r.dept, 30), title:s(r.title, 40), time:s(r.time, 30),
+    place:s(r.place, 60), boss:s(r.boss, 30), pdf:httpsUrl(r.pdf), note:s(r.note, 200)
+  };
+}
+function buildRecruit(){
+  const all = ST.list('recruit').filter(r => r && typeof r === 'object' && r.id != null);
+  const m = all.find(r => r.id === '_meta');
+  R.meta = m ? {lastMail: isDT(m.lastMail) ? m.lastMail : '', mail7: Number(m.mail7) || 0} : null;
+  const rows = all.filter(r => ['screen','invite','result'].includes(r.src) && typeof r.name === 'string' && r.name.trim()).map(cleanRow);
+  R.screen = rows.filter(r => r.src === 'screen');
+  R.invite = rows.filter(r => r.src === 'invite');
+  R.result = rows.filter(r => r.src === 'result');
+  R.byDoc = new Map(R.result.filter(r => r.doc).map(r => [r.doc, r]));
+  R.byName = new Map();
+  for (const r of rows) { const k = normName(r.name); if (!R.byName.has(k)) R.byName.set(k, []); R.byName.get(k).push(r); }
+  R.hireByName = new Map();
+  for (const h of S.hires.values()) { const k = normName(h.name); if (!k) continue; if (!R.hireByName.has(k)) R.hireByName.set(k, []); R.hireByName.get(k).push(h); }
+  R.ext = new Map();
+}
+const hireDay = h => ivDay(h) || today();
+const near = (a, b) => isDate(a) && isDate(b) && Math.abs(dayDiff(a, b)) <= RC_DAYS.match;
+/** 試算表裡對到這個人的資料 { screen, invite, result }（面試結果用文件 id，其他用姓名＋日期相近） */
+function extFor(h){
+  if (R.ext.has(h.id)) return R.ext.get(h.id);
+  const d = hireDay(h), list = R.byName.get(normName(h.name)) || [];
+  const pick = src => {
+    const c = list.filter(r => r.src === src && (isDate(rowDay(r)) ? near(rowDay(r), d) : src === 'result'));
+    return c.sort((a, b) => (isDate(rowDay(a)) ? Math.abs(dayDiff(rowDay(a), d)) : 999) - (isDate(rowDay(b)) ? Math.abs(dayDiff(rowDay(b), d)) : 999))[0] || null;
+  };
+  const x = {result: (h.id.startsWith('doc-') && R.byDoc.get(h.id.slice(4))) || pick('result'), invite:pick('invite'), screen:pick('screen')};
+  R.ext.set(h.id, x);
+  return x;
+}
+/** 這列試算表資料已經是看板上的人了嗎（姓名相同、日期相近） */
+const rowHired = r => (R.hireByName.get(normName(r.name)) || []).some(h => !isDate(rowDay(r)) || near(hireDay(h), rowDay(r)));
+const screenTaken = r => rowHired(r) || R.invite.some(i => (r.cv && i.cv === r.cv) || (normName(i.name) === normName(r.name) && near(rowDay(i), rowDay(r))));
+const inviteBooked = r => /^已預約/.test(r.st);
+const inviteCancel = r => /取消/.test(r.st);
+const TIER_RANK = {'推薦面試':0, '可評估':1, '不推薦':2};   // 和 AI 篩選規則相同：80 分以上、60–79、59 以下
+/** 招募前三欄的卡片；useQ＝套用搜尋框 */
+function extItems(key, useQ = true){
+  const t = today(), q = useQ ? S.q.toLowerCase() : '';
+  const vis = r => !q || [r.name, r.job].some(x => x.toLowerCase().includes(q));
+  if (key === 'x_screen' || key === 'x_pause') {
+    const floor = addDays(t, -RC_DAYS.screen);
+    return R.screen.filter(r => (key === 'x_pause') === (r.tier === '不推薦') && rowDay(r) >= floor && !screenTaken(r) && vis(r))
+      .sort((a, b) => (TIER_RANK[a.tier] ?? 3) - (TIER_RANK[b.tier] ?? 3) || (b.score ?? -1) - (a.score ?? -1) || (a.at < b.at ? 1 : -1));
+  }
+  if (key === 'x_invite') {
+    const floor = addDays(t, -RC_DAYS.invite);
+    return R.invite.filter(r => !inviteBooked(r) && !inviteCancel(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
+  }
+  if (key === 'x_booked') {
+    return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14)))
+      .sort((a, b) => ((a.ivD || '9999') + a.ivT) < ((b.ivD || '9999') + b.ivT) ? -1 : 1);
+  }
+  if (key === 'x_cancel') {
+    const floor = addDays(t, -RC_DAYS.cancel);
+    return R.invite.filter(r => inviteCancel(r) && rowDay(r) >= floor && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
+  }
+  return [];
+}
+/** 預計報到日：看板上填的到職日，沒填就用試算表的預計報到日 */
+const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
 
 const docsReady = h => DOC_SLOTS.filter(s => s.required).every(s => h.docs[s.key]);
 const docCount = h => { const req = DOC_SLOTS.filter(s => s.required); return {have:req.filter(s => h.docs[s.key]).length, need:req.length}; };
@@ -188,9 +296,13 @@ function columnItems(key){
   const all = [...S.hires.values()].filter(visible);
   if (key === 'done') return all.filter(h => h.stage === 'done' && inMonth(doneDate(h))).sort((a,b) => (obj(b.steps.insurance).at||0) - (obj(a.steps.insurance).at||0));
   const items = all.filter(h => h.stage === key);
-  return key === 'interview' ? items.sort((a,b) => cmpDate(a.interviewDate, b.interviewDate)) : items.sort((a,b) => cmpDate(a.startDate, b.startDate));
+  if (key === 'interview') return items.sort((a,b) => cmpDate(a.interviewDate, b.interviewDate));
+  if (key === 'confirm') return items.sort((a,b) => (obj(a.steps.interview).at || 0) - (obj(b.steps.interview).at || 0));
+  if (key === 'offer') return items.sort((a,b) => cmpDate(planStart(a), planStart(b)));
+  return items.sort((a,b) => cmpDate(a.startDate, b.startDate));
 }
 const rejectedItems = () => [...S.hires.values()].filter(visible).filter(h => h.stage === 'rejected' && inMonth(ivDay(h)));
+const declinedItems = () => [...S.hires.values()].filter(visible).filter(h => h.stage === 'declined' && inMonth(tsDate(obj(h.steps.confirm).at) || ivDay(h)));
 function dueInfo(h){
   if (!h.startDate) return {text:'未填到職日', cls:''};
   const d = dayDiff(today(), h.startDate);
@@ -212,15 +324,30 @@ function saveHire(id, mutate){
 }
 function decide(id, hired){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
-  saveHire(id, r => { r.stage = hired ? 'docs' : 'rejected'; r.result = hired ? 'hired' : 'rejected'; r.steps = obj(r.steps); r.steps.interview = {at:Date.now(), by:myName()}; });
-  toast(hired ? `${nm(h)} 已錄取，請上傳證件` : `${nm(h)} 已標記為未錄取`, () => backTo(id, 'interview'));
+  saveHire(id, r => { r.stage = hired ? 'confirm' : 'rejected'; r.result = hired ? 'hired' : 'rejected'; r.steps = obj(r.steps); r.steps.interview = {at:Date.now(), by:myName()}; });
+  toast(hired ? `${nm(h)} 已錄取，移到「確認入職」` : `${nm(h)} 已標記為未錄取`, () => backTo(id, 'interview'));
+}
+/** 錄取後確認要不要來：要 → Offer；不要 → 婉拒入職 */
+function confirmJoin(id, yes){
+  const h = S.hires.get(id); if (!h || !canEdit() || h.stage !== 'confirm') return;
+  saveHire(id, r => { r.stage = yes ? 'offer' : 'declined'; r.steps = obj(r.steps); r.steps.confirm = {at:Date.now(), by:myName()}; });
+  toast(yes ? `${nm(h)} 要來，移到「Offer」` : `${nm(h)} 婉拒入職`, () => backTo(id, 'confirm'));
 }
 function advance(id){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
+  if (h.stage === 'confirm') { confirmJoin(id, true); return; }
   const i = FLOW.indexOf(h.stage);
   if (i < 1 || i >= FLOW.length - 1) return;
   if (h.stage === 'docs' && !docsReady(h)) { openDrawer(id); toast('請先上傳身分證／居留證正反面'); return; }
   const cur = h.stage, next = FLOW[i + 1];
+  if (cur === 'offer') {   // 已報到：沒填到職日就記下（試算表的預計報到日已到就用它，否則用今天）
+    const t = today(), plan = (extFor(h).result || {}).start || '';
+    const start = h.startDate || (isDate(plan) && plan <= t ? plan : t), setStart = !h.startDate;
+    saveHire(id, r => { r.stage = next; r.steps = obj(r.steps); r.steps.offer = {at:Date.now(), by:myName()}; if (setStart) r.startDate = start; });
+    toast(`${nm(h)} 已報到，移到「新進人員・勞健保」${setStart ? `，到職日記為 ${md(start)}` : ''}`,
+      () => saveHire(id, r => { r.stage = 'offer'; r.steps = obj(r.steps); delete r.steps.offer; if (setStart) r.startDate = ''; }));
+    return;
+  }
   saveHire(id, r => { r.stage = next; r.steps = obj(r.steps); r.steps[cur] = {at:Date.now(), by:myName()}; });
   toast(next === 'done' ? `${nm(h)} 已完成勞健保加保` : `${nm(h)} 移到「${TITLE[next]}」`, () => backTo(id, cur));
 }
@@ -229,7 +356,7 @@ function backTo(id, target){
 }
 function stepBack(id){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
-  const target = h.stage === 'rejected' ? 'interview' : FLOW[FLOW.indexOf(h.stage) - 1];
+  const target = h.stage === 'rejected' ? 'interview' : h.stage === 'declined' ? 'confirm' : FLOW[FLOW.indexOf(h.stage) - 1];
   if (!target) return;
   backTo(id, target);
   toast(`${nm(h)} 退回「${TITLE[target]}」`);
@@ -331,12 +458,15 @@ function deleteRecord(id){
 
 /* ================= 頁首、頁尾、同步狀態 ================= */
 function renderViews(){
-  const inFlow = [...S.hires.values()].filter(h => h.stage === 'interview' || ACTIVE.includes(h.stage)).length;
+  const all = [...S.hires.values()];
+  const inRecruit = all.filter(h => ['interview','confirm','offer'].includes(h.stage)).length;
+  const inFlow = all.filter(h => ACTIVE.includes(h.stage)).length;
   let left = 0;
   for (const f of FREQS) { const d = S.checks[f.key].done; left += rtItems(f.key).filter(r => !(d[r.id] && d[r.id].at)).length; }
   const urgent = S.loaded ? overviewAlerts().filter(a => a.sev >= 2).length : 0;
   const tabs = [
     ['overview', '總覽', urgent ? `${urgent} 項緊急` : ''],
+    ['recruit', '招募', S.loaded ? `${inRecruit} 人` : ''],
     ['pipeline', '新進人員・勞健保', S.loaded ? `${inFlow} 人` : ''],
     ['routine', '例行工作', S.loaded && S.routines.size ? `未完成 ${left}` : '']
   ];
@@ -347,7 +477,7 @@ function renderViews(){
 function renderBanner(){
   const msgs = [];
   if (!((window.HR_CLOUD || {}).url || '').trim()) msgs.push('尚未設定雲端網址（config.js 的 HR_CLOUD.url），資料只存在這台裝置。');
-  if (AU && AU.user() && !canEdit() && (S.view === 'pipeline' || S.view === 'overview')) msgs.push('你目前只能查看人事資料；需要修改請向管理員申請「人事資料編輯」權限。');
+  if (AU && AU.user() && !canEdit() && ['recruit','pipeline','overview'].includes(S.view)) msgs.push('你目前只能查看人事資料；需要修改請向管理員申請「人事資料編輯」權限。');
   const b = $('#banner');
   b.textContent = msgs.join(' ');
   b.hidden = !msgs.length;
@@ -367,65 +497,140 @@ function renderFoot(){
   $('#foot').innerHTML = `${me}<span>${n} 筆人事資料 · ${S.routines.size} 項例行工作</span>`;
 }
 function showView(){
-  for (const k of VIEWS) $('#' + k + '-view').hidden = S.view !== k;
+  for (const k of ['overview','pipeline','routine','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
 }
 
-/* ================= 新進人員・勞健保 ================= */
+/* ================= 招募／新進人員・勞健保（同一個看板畫面，欄位不同） ================= */
+const curBoard = () => S.view === 'pipeline' ? 'pipeline' : 'recruit';
+const batchOn = () => S.batch && S.view === 'recruit';
+function curTab(){ const b = curBoard(), t = S.tabs[b]; return BOARDS[b].some(s => s.key === t) ? t : BOARDS[b][0].key; }
+const colItems = (key, useQ) => EXT.includes(key) ? extItems(key, useQ) : columnItems(key);
 function renderToolbar(){
-  const [y, m] = S.month.split('-');
+  const [y, m] = S.month.split('-'), rec = curBoard() === 'recruit', canW = canEdit();
   $('#m-label').textContent = `${y} 年 ${+m} 月`;
   $('#m-next').disabled = S.month >= curMonth();
-  $('#imp-btn').hidden = !canEdit();
-  $('#slot-btn').hidden = !canEdit();
+  $('#q').placeholder = rec ? '搜尋姓名、職缺' : '搜尋姓名、職位、部門';
+  $('#imp-btn').hidden = !canW || !rec;
+  $('#slot-btn').hidden = !canW || !rec;
   const bb = $('#batch-btn');
-  bb.hidden = !canEdit();
+  bb.hidden = !canW || !rec;
   bb.classList.toggle('on', S.batch);
   bb.setAttribute('aria-pressed', String(S.batch));
   bb.textContent = S.batch ? '結束批次整理' : '批次整理';
-  $('#add-btn').hidden = !canEdit();
+  $('#add-btn').hidden = !canW || !rec;
+  $('#ins-note').hidden = rec;
+  $('#rc-note').hidden = !rec;
 }
 function renderStats(){
   const all = [...S.hires.values()];
   const mLabel = `${+S.month.slice(5)} 月`;
-  const interviewed = all.filter(h => inMonth(ivDay(h)));
-  const hired = interviewed.filter(h => h.result === 'hired' || ACTIVE.includes(h.stage) || h.stage === 'done');
-  const rejected = interviewed.filter(h => h.stage === 'rejected');
-  const decided = hired.length + rejected.length;
-  const rate = decided ? Math.round(hired.length / decided * 100) + '%' : '—';
-  const active = all.filter(h => ACTIVE.includes(h.stage));
-  const t = today();
-  const late = active.filter(h => h.startDate && h.startDate <= t);
-  const done = all.filter(h => h.stage === 'done' && inMonth(doneDate(h)));
   const v = n => S.loaded ? n : '–';
-  const items = [
-    ['面試人數', v(interviewed.length), `${mLabel}面試`, ''],
-    ['錄取人數', v(hired.length), `錄取率 ${S.loaded ? rate : '—'}`, ''],
-    ['辦理中', v(active.length), '證件至勞健保之間', ''],
-    ['已到職未加保', v(late.length), late.length ? '請立即申報加保' : '目前沒有', late.length ? 'alert' : ''],
-    ['完成加保', v(done.length), `${mLabel}完成`, '']
-  ];
+  let items;
+  if (curBoard() === 'recruit') {
+    const interviewed = all.filter(h => inMonth(ivDay(h)));
+    const hired = interviewed.filter(h => h.result === 'hired' || ACTIVE.includes(h.stage) || h.stage === 'done');
+    const rejected = interviewed.filter(h => h.stage === 'rejected');
+    const decided = hired.length + rejected.length;
+    const rate = decided ? Math.round(hired.length / decided * 100) + '%' : '—';
+    const scr = R.meta ? extItems('x_screen', false) : null, inv = R.meta ? extItems('x_invite', false) : null;
+    const waiting = all.filter(h => h.stage === 'offer');
+    items = [
+      ['新履歷', scr ? v(scr.length) : '–', scr ? `近 ${RC_DAYS.screen} 天・推薦面試 ${scr.filter(r => r.tier === '推薦面試').length} 位` : '尚未連結履歷篩選試算表', ''],
+      ['邀約中', inv ? v(inv.length) : '–', inv ? '等應徵者選時間' : '尚未連結', ''],
+      ['面試人數', v(interviewed.length), `${mLabel}面試`, ''],
+      ['錄取人數', v(hired.length), `錄取率 ${S.loaded ? rate : '—'}`, ''],
+      ['等報到', v(waiting.length), '已確認要來', '']
+    ];
+  } else {
+    const active = all.filter(h => ACTIVE.includes(h.stage));
+    const t = today();
+    const late = active.filter(h => h.startDate && h.startDate <= t);
+    const joined = all.filter(h => (ACTIVE.includes(h.stage) || h.stage === 'done') && inMonth(h.startDate));
+    const done = all.filter(h => h.stage === 'done' && inMonth(doneDate(h)));
+    items = [
+      ['本月到職', v(joined.length), `${mLabel}報到`, ''],
+      ['辦理中', v(active.length), '報到至勞健保之間', ''],
+      ['已到職未加保', v(late.length), late.length ? '請立即申報加保' : '目前沒有', late.length ? 'alert' : ''],
+      ['完成加保', v(done.length), `${mLabel}完成`, '']
+    ];
+  }
   $('#stats').innerHTML = items.map(([k, val, s, cls]) =>
     `<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${val}</div><div class="s">${esc(s)}</div></div>`).join('');
 }
 function renderTabs(){
-  $('#tabs').innerHTML = STAGES.map(st =>
-    `<button class="tab" type="button" role="tab" aria-selected="${S.tab === st.key}" data-tab="${st.key}">${st.title}<span>${S.loaded ? columnItems(st.key).length : ''}</span></button>`).join('');
+  const tab = curTab();
+  $('#tabs').innerHTML = BOARDS[curBoard()].map(st =>
+    `<button class="tab" type="button" role="tab" aria-selected="${tab === st.key}" data-tab="${st.key}">${st.title}<span>${S.loaded && (!EXT.includes(st.key) || R.meta) ? colItems(st.key).length : ''}</span></button>`).join('');
 }
 const chip = (text, cls) => `<span class="chip ${cls || ''}">${esc(text)}</span>`;
+const extLink = (u, t) => httpsUrl(u) ? `<a class="link" href="${esc(u)}" target="_blank" rel="noopener">${esc(t)} ↗</a>` : '';
+const decCls = s => /確認錄取|^錄取/.test(s) ? 'ok' : /不錄取|婉拒|取消/.test(s) ? 'danger' : '';
+/** 試算表的面試結果／錄取決策，放在卡片上提醒 */
+function sheetDecChip(h){
+  const rs = extFor(h).result;
+  const s = rs && (rs.dec || rs.res);
+  return s ? chip(`試算表：${s}`, decCls(s)) : '';
+}
+function startChip(h){
+  const d = planStart(h);
+  if (!isDate(d)) return chip('還沒有報到日');
+  const n = dayDiff(today(), d);
+  return n === 0 ? chip('今天報到', 'warn') : n < 0 ? chip(`預計 ${md(d)} 報到・已過`, 'warn') : chip(`預計 ${md(d)} 報到`);
+}
+/** 招募前三欄（試算表資料，只能看）的卡片 */
+function extCardHTML(r, key){
+  const chips = [], t = today();
+  let text = '';
+  if (key === 'x_screen') {
+    chips.push(chip(r.tier + (r.score != null ? ` ${r.score} 分` : ''), r.tier === '推薦面試' ? 'ok' : ''));
+    if (r.at) chips.push(chip(`${shortDT(r.at)} 收到`));
+    if (r.st && r.st !== '未處理') chips.push(chip(r.st, 'warn'));
+    if (r.type) chips.push(chip(r.type));
+    const why = r.why.replace(/^[^：:]{0,40}[：:]\s*評分\s*\d+\s*分[，,。]?\s*/, '');
+    text = [r.sum, why].filter(Boolean).map(s => `<span>${esc(s)}</span>`).join('');
+  } else {
+    if (r.ivD) chips.push(r.ivD === t ? chip(`今天 ${r.ivT} 面試`, 'warn') : chip(`面試 ${md(r.ivD)}${r.ivT ? ' ' + r.ivT : ''}`, r.ivD < t ? 'warn' : ''));
+    else if (r.at) chips.push(chip(`${shortDT(r.at)} 送出邀約`));
+    if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
+    if (r.plat) chips.push(chip(r.plat));
+  }
+  const links = [extLink(r.cv, '104 履歷'), extLink(r.mail, 'Gmail')].filter(Boolean).join('');
+  return `<article class="card ext">
+    <div class="c-head"><span class="c-name">${esc(r.name)}</span>${r.job ? `<span class="c-role">${esc(r.job)}</span>` : ''}</div>
+    ${text ? `<p class="c-why">${text}</p>` : ''}
+    <div class="chips">${chips.join('')}</div>
+    ${links ? `<div class="c-links">${links}</div>` : ''}
+  </article>`;
+}
 function cardHTML(h){
   const id = esc(h.id), canW = canEdit();
   const chips = [], acts = [];
   if (h.stage === 'interview') {
-    if (h.interviewDate) chips.push(h.interviewDate === today() ? chip(`今天 ${h.interviewTime || ''} 面試`, 'warn') : chip(`面試 ${md(h.interviewDate)}${h.interviewTime ? ' ' + h.interviewTime : ''}`));
+    const inv = extFor(h).invite, ivD = h.interviewDate || (inv && inv.ivD) || '', ivT = h.interviewDate ? h.interviewTime : (inv && inv.ivT) || '';
+    if (ivD) chips.push(ivD === today() ? chip(`今天 ${ivT} 面試`, 'warn') : chip(`面試 ${md(ivD)}${ivT ? ' ' + ivT : ''}`));
     if (h.source === 'web') chips.push(chip('線上應徵', 'ok'));
     else if (h.formAt) chips.push(chip(`填表 ${md(tsDate(h.formAt))}`));
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
-    if (h.startDate) chips.push(chip(`預計到職 ${md(h.startDate)}`));
+    const dc = sheetDecChip(h); if (dc) chips.push(dc);
     if (canW) acts.push(
       `<button class="btn sm" type="button" data-act="comment" data-id="${id}">${h.comment ? '查看評語' : '填寫評語'}</button>`,
       `<button class="btn sm primary" type="button" data-act="hire" data-id="${id}">錄取</button>`,
       `<button class="btn sm" type="button" data-act="reject" data-id="${id}">未錄取</button>`);
+  } else if (h.stage === 'confirm') {
+    const s = obj(h.steps.interview);
+    if (s.at) chips.push(chip(`${md(tsDate(s.at))} 錄取`));
+    const dc = sheetDecChip(h); if (dc) chips.push(dc);
+    if (planStart(h)) chips.push(startChip(h));
+    if (canW) acts.push(
+      `<button class="btn sm primary" type="button" data-act="join-yes" data-id="${id}">要，寄 Offer</button>`,
+      `<button class="btn sm" type="button" data-act="join-no" data-id="${id}">不要</button>`);
+  } else if (h.stage === 'offer') {
+    const rs = extFor(h).result;
+    chips.push(startChip(h));
+    if (rs && rs.offer) chips.push(chip(`Offer ${rs.offer}`, rs.offer === '已寄出' ? 'ok' : /未寄送/.test(rs.offer) ? 'warn' : ''));
+    if (rs && rs.pdf) acts.push(`<a class="btn sm" href="${esc(rs.pdf)}" target="_blank" rel="noopener">Offer PDF ↗</a>`);
+    if (canW) acts.push(`<button class="btn sm primary" type="button" data-act="advance" data-id="${id}">${ADV_LABEL.offer}</button>`);
   } else if (h.stage === 'done') {
     if (h.startDate) chips.push(chip(`到職 ${md(h.startDate)}`));
     const dd = doneDate(h); if (dd) chips.push(chip(`加保 ${md(dd)}`, 'ok'));
@@ -444,7 +649,7 @@ function cardHTML(h){
     }
   }
   const role = [h.position, h.dept].filter(Boolean).join('・');
-  const batch = S.batch, picked = batch && S.sel.has(h.id);
+  const batch = batchOn(), picked = batch && S.sel.has(h.id);
   return `<article class="card${h.stage === 'done' ? ' is-done' : ''}${batch ? ' is-batch' : ''}${picked ? ' picked' : ''}">
     ${batch ? `<label class="pick"><input type="checkbox" data-pick="${id}"${picked ? ' checked' : ''} aria-label="選取 ${esc(nm(h))}"></label>` : ''}
     ${h.stage === 'done' ? '<span class="stamp" aria-hidden="true">已加保</span>' : ''}
@@ -453,33 +658,46 @@ function cardHTML(h){
     ${acts.length && !batch ? `<div class="c-act">${acts.join('')}</div>` : ''}
   </article>`;
 }
+/** 欄位最下面可展開的清單（未錄取、婉拒入職、暫緩、應徵者取消） */
+function foldHTML(key, summary, lis){
+  if (!lis.length) return '';
+  const open = S.open[key] || (key === 'rej' && batchOn());
+  return `<details class="rej" data-fold="${key}"${open ? ' open' : ''}><summary>${esc(summary)}</summary><ul>${lis.join('')}</ul></details>`;
+}
+const hireLi = h => batchOn()
+  ? `<li><label><input type="checkbox" class="pick-r" data-pick="${esc(h.id)}"${S.sel.has(h.id) ? ' checked' : ''}><span class="link">${esc(nm(h))}</span></label><span>${esc(h.position)}</span></li>`
+  : `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc(h.position)}</span></li>`;
+const extLi = (r, note) => `<li>${r.cv ? `<a class="link" href="${esc(r.cv)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : `<b>${esc(r.name)}</b>`}<span>${esc(note || r.job)}</span></li>`;
+function colExtraHTML(key, mNum){
+  if (key === 'interview') { const rej = rejectedItems(); return foldHTML('rej', `未錄取・${mNum} 月 ${rej.length} 位`, rej.map(hireLi)); }
+  if (key === 'confirm') { const dec = declinedItems(); return foldHTML('dec', `婉拒入職・${mNum} 月 ${dec.length} 位`, dec.map(hireLi)); }
+  if (key === 'x_screen' && R.meta) { const p = extItems('x_pause'); return foldHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extLi(r, r.why || r.job))); }
+  if (key === 'x_booked' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `應徵者取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r))); }
+  return '';
+}
 function renderBoard(){
-  const mNum = +S.month.slice(5);
-  $('#board').innerHTML = STAGES.map(st => {
-    const items = S.loaded ? columnItems(st.key) : [];
+  const mNum = +S.month.slice(5), stages = BOARDS[curBoard()], tab = curTab(), board = $('#board');
+  board.style.setProperty('--cols', stages.length);
+  board.innerHTML = stages.map(st => {
+    const ext = EXT.includes(st.key);
+    const items = S.loaded && (!ext || R.meta) ? colItems(st.key) : [];
     let body;
     if (!S.loaded) body = '<div class="col-empty">讀取中…</div>';
+    else if (ext && !R.meta) body = `<div class="col-empty">${st.key === 'x_screen' ? '管理員在「管理」頁連結「履歷篩選」試算表後，這裡會出現 Gmail 收到、AI 篩選過的履歷。' : '尚未連結履歷篩選試算表'}</div>`;
     else if (!items.length) body = `<div class="col-empty">${esc(S.q ? '沒有符合搜尋的人' : EMPTY[st.key])}</div>`;
-    else body = items.map(cardHTML).join('');
-    let extra = '';
-    if (st.key === 'interview' && S.loaded) {
-      const rej = rejectedItems();
-      if (rej.length) extra = `<details class="rej"${S.rejOpen || S.batch ? ' open' : ''}><summary>未錄取・${mNum} 月 ${rej.length} 位</summary><ul>${rej.map(h =>
-        S.batch
-          ? `<li><label><input type="checkbox" class="pick-r" data-pick="${esc(h.id)}"${S.sel.has(h.id) ? ' checked' : ''}><span class="link">${esc(nm(h))}</span></label><span>${esc(h.position)}</span></li>`
-          : `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc(h.position)}</span></li>`).join('')}</ul></details>`;
-    }
-    const hint = st.key === 'done' ? `${mNum} 月完成加保` : st.hint;
+    else body = items.map(x => ext ? extCardHTML(x, st.key) : cardHTML(x)).join('');
+    const extra = S.loaded ? colExtraHTML(st.key, mNum) : '';
+    let hint = st.key === 'done' ? `${mNum} 月完成加保` : st.hint;
+    if (st.key === 'x_screen' && R.meta && R.meta.lastMail) hint = `上次收信 ${shortDT(R.meta.lastMail)}・7 天內 ${R.meta.mail7} 封`;
     const allPicked = items.length && items.every(h => S.sel.has(h.id));
-    const colPick = S.batch && items.length ? `<button class="col-pick" type="button" data-pick-col="${st.key}">${allPicked ? '取消全選' : '全選'}</button>` : '';
-    return `<section class="col${S.tab === st.key ? ' is-tab' : ''}" aria-labelledby="col-${st.key}">
-      <header class="col-h">${st.n ? `<span class="col-n">${st.n}</span>` : '<span class="col-n fin">✓</span>'}<h2 class="col-t" id="col-${st.key}">${st.title}</h2><span class="col-c">${S.loaded ? items.length : ''}</span>${colPick}</header>
+    const colPick = batchOn() && !ext && items.length ? `<button class="col-pick" type="button" data-pick-col="${st.key}">${allPicked ? '取消全選' : '全選'}</button>` : '';
+    return `<section class="col${tab === st.key ? ' is-tab' : ''}${ext ? ' is-ext' : ''}" aria-labelledby="col-${st.key}">
+      <header class="col-h">${st.n ? `<span class="col-n">${st.n}</span>` : '<span class="col-n fin">✓</span>'}<h2 class="col-t" id="col-${st.key}">${st.title}</h2><span class="col-c">${S.loaded && (!ext || R.meta) ? items.length : ''}</span>${colPick}</header>
       <p class="col-hint">${esc(hint)}</p>
       <div class="col-body">${body}${extra}</div>
     </section>`;
   }).join('');
-  const det = $('#board details.rej');
-  if (det) det.addEventListener('toggle', () => { S.rejOpen = det.open; });
+  board.querySelectorAll('details[data-fold]').forEach(det => det.addEventListener('toggle', () => { S.open[det.dataset.fold] = det.open; }));
 }
 
 /* ================= 面試時段（線上應徵表單 apply.html 讓應徵者選） ================= */
@@ -520,7 +738,7 @@ function renderSlots(){
   root.innerHTML = `
     <div class="f"><span class="lbl">應徵連結（傳給應徵者，不用登入）</span>
       <div class="sl-link"><input id="sl-url" readonly value="${esc(APPLY_URL)}" aria-label="應徵連結"><button class="btn sm" type="button" data-sl="copy">複製</button><a class="btn sm" href="${esc(APPLY_URL)}" target="_blank" rel="noopener">開啟</a></div>
-      <p class="note top" style="margin-top:6px">應徵者打開連結，先選一個還有空位的時段，再填人事資料表；送出後直接出現在「面試資料」，面試日期和時間都會帶入。用 LINE 傳時在網址後面加 <code>?openExternalBrowser=1</code>。</p></div>
+      <p class="note top" style="margin-top:6px">應徵者打開連結，先選一個還有空位的時段，再填人事資料表；送出後直接出現在「招募」頁的「面試」，面試日期和時間都會帶入。用 LINE 傳時在網址後面加 <code>?openExternalBrowser=1</code>。</p></div>
     <form class="sl-add" id="sl-form" novalidate>
       <div class="f"><label for="sl-date">日期</label><input id="sl-date" type="date" value="${esc(keep['sl-date'] || '')}"></div>
       <div class="f"><label for="sl-times">時間（可以一次填多個，用空白或逗號分開）</label><input id="sl-times" placeholder="例如 10:00 10:30 14:00" value="${esc(keep['sl-times'] || '')}"></div>
@@ -570,12 +788,12 @@ function pickBefore(date){
   list.forEach(h => S.sel.add(h.id));
   S.batchConfirm = false;
   renderBoard(); renderBatchBar();
-  toast(list.length ? `選取了 ${list.length} 位 ${md(date)} 前（含當天）填表的面試者` : `沒有 ${md(date)} 前填表、還在面試資料的人`);
+  toast(list.length ? `選取了 ${list.length} 位 ${md(date)} 前（含當天）填表的面試者` : `沒有 ${md(date)} 前填表、還在「面試」的人`);
 }
 function batchPhotoCount(){ let n = 0; S.sel.forEach(id => { const h = S.hires.get(id); if (h) n += Object.keys(h.docs).length; }); return n; }
 function renderBatchBar(){
   const bar = $('#batch-bar'), pv = $('#pipeline-view');
-  if (!S.batch || S.view !== 'pipeline') { bar.hidden = true; pv.classList.remove('batching'); return; }
+  if (!batchOn()) { bar.hidden = true; pv.classList.remove('batching'); return; }
   for (const id of [...S.sel]) if (!S.hires.has(id)) S.sel.delete(id);
   const n = S.sel.size, dis = n ? '' : ' disabled', photos = batchPhotoCount();
   bar.hidden = false; pv.classList.add('batching');
@@ -584,7 +802,7 @@ function renderBatchBar(){
     ${S.batchConfirm
       ? `<span class="batch-confirm">確定刪除這 ${n} 人的所有資料？${photos ? `${photos} 份證件照片會一併刪除（雲端硬碟垃圾桶保留 30 天）。` : ''}刪除後不會再被表單自動匯入加回來。</span><button class="btn sm danger-solid" type="button" data-b="del-yes">確定刪除</button><button class="btn sm ghost" type="button" data-b="del-no">取消</button>`
       : `<button class="btn sm primary" type="button" data-b="hire"${dis}>錄取</button><button class="btn sm" type="button" data-b="reject"${dis}>未錄取</button><button class="btn sm ghost danger" type="button" data-b="del"${dis}>刪除</button><button class="btn sm ghost" type="button" data-b="clear"${dis}>清除選取</button>`}
-    <span class="batch-date"><label for="batch-date">選取</label><input type="date" id="batch-date" value="${esc(S.batchDate || defaultBatchDate())}"><span>前（含當天）填表、還在「面試資料」的人</span><button class="btn sm" type="button" data-b="pick-date">選取</button></span>
+    <span class="batch-date"><label for="batch-date">選取</label><input type="date" id="batch-date" value="${esc(S.batchDate || defaultBatchDate())}"><span>前（含當天）填表、還在「面試」這一步的人</span><button class="btn sm" type="button" data-b="pick-date">選取</button></span>
     <span class="sp"></span><button class="btn sm" type="button" data-b="done">結束批次整理</button>
   </div>`;
 }
@@ -598,15 +816,15 @@ function batchStage(hired){
     if (h.stage !== 'interview') { if (!(h.stage === 'rejected' && !hired)) skipped++; return; }
     before.push(JSON.parse(JSON.stringify(cur)));
     const r = JSON.parse(JSON.stringify(cur));
-    r.stage = hired ? 'docs' : 'rejected'; r.result = hired ? 'hired' : 'rejected';
+    r.stage = hired ? 'confirm' : 'rejected'; r.result = hired ? 'hired' : 'rejected';
     r.steps = obj(r.steps); r.steps.interview = {at:now, by};
     r.updatedAt = now; r.updatedBy = by;
     recs.push(r);
   });
   if (recs.length) ST.saveMany('hires', recs);
   S.sel.clear(); S.batchConfirm = false;
-  const skip = skipped ? `（${skipped} 人不在「面試資料」這一步，沒有改）` : '';
-  toast(recs.length ? `${recs.length} 人${hired ? '已錄取，移到「錄取・證件」' : '已標記為未錄取'}${skip}` : `沒有可以改的人${skip}`, recs.length ? () => ST.saveMany('hires', before) : null);
+  const skip = skipped ? `（${skipped} 人不在「面試」這一步，沒有改）` : '';
+  toast(recs.length ? `${recs.length} 人${hired ? '已錄取，移到「確認入職」' : '已標記為未錄取'}${skip}` : `沒有可以改的人${skip}`, recs.length ? () => ST.saveMany('hires', before) : null);
   render();
 }
 function batchDelete(){
@@ -625,6 +843,11 @@ function batchDelete(){
 function overviewAlerts(){
   const t = today(), out = [];
   for (const h of S.hires.values()) {
+    if (h.stage === 'offer') {   // 等報到：報到日到了提醒按「已報到」
+      const p = planStart(h);
+      if (isDate(p)) { const d = dayDiff(t, p); if (d < 0) out.push({h, sev:1, text:`預計 ${md(p)} 報到・還沒按已報到`, cls:'warn', d:p}); else if (d === 0) out.push({h, sev:1, text:'今天報到', cls:'warn', d:p}); }
+      continue;
+    }
     if (!ACTIVE.includes(h.stage)) continue;
     if (!h.startDate) { out.push({h, sev:0, text:'未填到職日', cls:''}); continue; }
     const d = dayDiff(t, h.startDate);
@@ -632,7 +855,7 @@ function overviewAlerts(){
     else if (d === 0) out.push({h, sev:2, text:'今日到職・須當日加保', cls:'warn'});
     else if (d <= 3) out.push({h, sev:1, text:`${d} 天後到職`, cls:'warn'});
   }
-  return out.sort((a, b) => b.sev - a.sev || cmpDate(a.h.startDate, b.h.startDate));
+  return out.sort((a, b) => b.sev - a.sev || cmpDate(a.d || a.h.startDate, b.d || b.h.startDate));
 }
 function renderOverview(){
   const root = $('#overview-view');
@@ -643,16 +866,22 @@ function renderOverview(){
   else {
     const rows = overviewAlerts().map(a =>
       `<li><button class="ov-row" type="button" data-open="${esc(a.h.id)}"><span class="ov-who"><span class="ov-name">${esc(nm(a.h))}</span><span class="ov-sub">${esc([a.h.position, '目前：' + TITLE[a.h.stage]].filter(Boolean).join('・'))}</span></span>${chip(a.text, a.cls)}</button></li>`).join('');
-    const pending = [...S.hires.values()].filter(h => h.stage === 'interview').length;
+    const cnt = st => [...S.hires.values()].filter(h => h.stage === st).length;
+    const pending = cnt('interview'), confirming = cnt('confirm');
     const docsMissing = [...S.hires.values()].filter(h => h.stage === 'docs' && !docsReady(h)).length;
-    alertBody = (rows ? `<ul class="ov-list">${rows}</ul>` : '<p class="rt-empty">目前沒有到職加保需要處理。</p>')
+    const fresh = R.meta ? extItems('x_screen', false) : [], top = fresh.filter(r => r.tier === '推薦面試').length;
+    alertBody = (rows ? `<ul class="ov-list">${rows}</ul>` : '<p class="rt-empty">目前沒有報到、加保需要處理。</p>')
       + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">證件未齊 ${docsMissing} 位 →</button>` : '')
-      + (pending ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="interview">面試待決定 ${pending} 位 →</button>` : '');
+      + (confirming ? `<button class="ov-more" type="button" data-go="recruit" data-tab="confirm">錄取待確認入職 ${confirming} 位 →</button>` : '')
+      + (pending ? `<button class="ov-more" type="button" data-go="recruit" data-tab="interview">面試待決定 ${pending} 位 →</button>` : '')
+      + (fresh.length ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">新履歷 ${fresh.length} 位${top ? `（推薦面試 ${top} 位）` : ''} →</button>` : '');
   }
-  const flow = STAGES.filter(s => s.key !== 'done').map(s => {
-    const n = S.loaded ? [...S.hires.values()].filter(h => h.stage === s.key).length : '–';
-    return `<button class="fm" type="button" data-go="pipeline" data-tab="${s.key}"><span class="fm-n">${n}</span><span class="fm-t">${s.title}</span></button>`;
-  }).join('');
+  const fm = s => {
+    const n = !S.loaded ? '–' : EXT.includes(s.key) ? (R.meta ? extItems(s.key, false).length : '–') : [...S.hires.values()].filter(h => h.stage === s.key).length;
+    return `<button class="fm" type="button" data-go="${s.board}" data-tab="${s.key}"><span class="fm-n">${n}</span><span class="fm-t">${s.title}</span></button>`;
+  };
+  const flow = `<h3 class="fm-h">招募</h3><div class="flow-mini">${BOARDS.recruit.map(fm).join('')}</div>`
+    + `<h3 class="fm-h">新進人員・勞健保</h3><div class="flow-mini">${BOARDS.pipeline.filter(s => s.key !== 'done').map(fm).join('')}</div>`;
   const rt = FREQS.map((f, i) => {
     const items = rtItems(f.key), done = S.checks[f.key].done;
     const left = items.filter(r => !(done[r.id] && done[r.id].at));
@@ -669,17 +898,23 @@ function renderOverview(){
     return `<div class="ov-rt${i === 0 ? ' first' : ''}"><div class="rt-h"><h3>${f.title}</h3><span class="rt-period">${periodLabel(f.key)}</span><span class="rt-prog">${items.length ? `${n}/${items.length}` : ''}</span></div>${items.length ? `<div class="rt-bar" aria-hidden="true"><i style="width:${pct}%"></i></div>` : ''}${body}</div>`;
   }).join('');
   const t0 = today();
-  const ups = [...S.hires.values()].filter(h => h.stage === 'interview' && h.interviewDate && h.interviewDate >= t0)
-    .sort((a, b) => (a.interviewDate + (a.interviewTime || '99:99')) < (b.interviewDate + (b.interviewTime || '99:99')) ? -1 : 1);
+  // 近期面試：看板上的人（面試日期沒填就用試算表的面試時間）＋試算表裡已約、還沒填人事資料表的人
+  const ups = [...S.hires.values()].filter(h => h.stage === 'interview').map(h => {
+    const inv = h.interviewDate ? null : extFor(h).invite;
+    return {h, d:h.interviewDate || (inv && inv.ivD) || '', t:h.interviewDate ? h.interviewTime : (inv && inv.ivT) || '', sub:[h.position, h.source === 'web' ? '線上應徵' : ''].filter(Boolean).join('・')};
+  }).concat(R.meta ? extItems('x_booked', false).map(r => ({r, d:r.ivD, t:r.ivT, sub:[r.job, r.formFill === '已填寫' ? '人事表已填' : '人事表未填'].filter(Boolean).join('・')})) : [])
+    .filter(x => isDate(x.d) && x.d >= t0)
+    .sort((a, b) => (a.d + (a.t || '99:99')) < (b.d + (b.t || '99:99')) ? -1 : 1);
+  const upRow = x => `<li><button class="ov-row" type="button" ${x.h ? `data-open="${esc(x.h.id)}"` : 'data-go="recruit" data-tab="x_booked"'}><span class="ov-who"><span class="ov-name">${esc(x.h ? nm(x.h) : x.r.name)}</span><span class="ov-sub">${esc(x.sub)}</span></span>${chip((x.d === t0 ? '今天' : dayLabel(x.d)) + (x.t ? ' ' + x.t : ''), x.d === t0 ? 'warn' : '')}</button></li>`;
   const upHTML = !S.loaded ? '<p class="rt-empty">讀取中…</p>' : ups.length
-    ? `<ul class="ov-list">${ups.slice(0, 8).map(h => `<li><button class="ov-row" type="button" data-open="${esc(h.id)}"><span class="ov-who"><span class="ov-name">${esc(nm(h))}</span><span class="ov-sub">${esc([h.position, h.source === 'web' ? '線上應徵' : ''].filter(Boolean).join('・'))}</span></span>${chip((h.interviewDate === t0 ? '今天' : dayLabel(h.interviewDate)) + (h.interviewTime ? ' ' + h.interviewTime : ''), h.interviewDate === t0 ? 'warn' : '')}</button></li>`).join('')}</ul>${ups.length > 8 ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="interview">還有 ${ups.length - 8} 位 →</button>` : ''}`
+    ? `<ul class="ov-list">${ups.slice(0, 8).map(upRow).join('')}</ul>${ups.length > 8 ? `<button class="ov-more" type="button" data-go="recruit" data-tab="interview">還有 ${ups.length - 8} 位 →</button>` : ''}`
     : '<p class="rt-empty">接下來沒有排定的面試。</p>';
   root.innerHTML = `<p class="ov-date">今天 ${dateLabel}</p>
     <div class="ov-grid">
       <div class="ov-col">
         <section class="ov-card" aria-labelledby="ov-up-h"><header class="ov-h"><h2 id="ov-up-h">近期面試</h2>${canEdit() ? '<button class="link" type="button" data-slots="1">面試時段 →</button>' : ''}</header>${upHTML}</section>
         <section class="ov-card" aria-labelledby="ov-alert-h"><header class="ov-h"><h2 id="ov-alert-h">需要處理</h2></header>${alertBody}</section>
-        <section class="ov-card" aria-labelledby="ov-flow-h"><header class="ov-h"><h2 id="ov-flow-h">新進人員・勞健保</h2><button class="link" type="button" data-go="pipeline">開啟看板 →</button></header><div class="flow-mini">${flow}</div></section>
+        <section class="ov-card" aria-labelledby="ov-flow-h"><header class="ov-h"><h2 id="ov-flow-h">招募・新進人員</h2><button class="link" type="button" data-go="recruit">開啟招募 →</button></header>${flow}</section>
       </div>
       <section class="ov-card" aria-labelledby="ov-rt-h"><header class="ov-h"><h2 id="ov-rt-h">例行工作・未完成</h2><button class="link" type="button" data-go="routine">${canRoutine() ? '管理清單' : '查看全部'} →</button></header>${rt}</section>
     </div>`;
@@ -814,8 +1049,55 @@ function renderUsers(){
       <p class="muted">用 Gmail 加入同事。名單內的人都能查看人事資料與打勾例行工作；其他動作依勾選的權限。</p>
       ${people}
     </section>
+    ${recruitSectionHTML()}
     ${formSectionHTML()}
   </div>`;
+}
+
+/* ---------- 招募流程：連結「履歷篩選」試算表（只讀） ---------- */
+const RC = {configured:null, url:'', name:'', lastSync:0, lastError:'', counts:{}, missing:[], shareTo:'', draft:null, busy:false, msg:'', msgErr:false, confirmUnlink:false};
+function applyRecruitStatus(j){
+  if (!j || typeof j !== 'object') return;
+  RC.configured = !!j.configured;
+  if (typeof j.url === 'string') RC.url = j.url;
+  RC.name = typeof j.name === 'string' ? j.name : RC.name;
+  RC.lastSync = j.lastSync || 0; RC.lastError = j.lastError || '';
+  RC.counts = obj(j.counts); RC.missing = Array.isArray(j.missing) ? j.missing.filter(x => typeof x === 'string') : [];
+  if (j.shareTo) RC.shareTo = j.shareTo;
+}
+function recruitSectionHTML(){
+  const when = ms => ms ? new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '還沒同步過';
+  const c = RC.counts;
+  const status = !FS.loaded ? '讀取中…'
+    : RC.configured ? `已連結「${RC.name || '履歷篩選'}」・上次同步 ${when(RC.lastSync)}・每 10 分鐘自動同步${RC.lastSync ? `（篩選名單 ${c.screen | 0}、面試邀約 ${c.invite | 0}、面試結果 ${c.result | 0} 筆）` : ''}`
+    : '尚未連結：「招募」頁的履歷篩選、邀約中、已約面試三欄會是空的。';
+  const url = RC.draft != null ? RC.draft : RC.url;
+  return `<section class="ov-card" aria-labelledby="rc-h"><header class="ov-h"><h2 id="rc-h">招募流程（履歷篩選試算表）</h2></header>
+    <p class="muted">貼上 hr@cheeseduke.com.tw 的「履歷篩選」試算表網址。要先用擁有試算表的帳號，把試算表共用給 <b>${esc(RC.shareTo || FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。App 只讀不寫：Gmail 撈履歷、AI 篩選、寄 104 邀約、寄 Offer 仍在試算表裡操作，「招募」頁顯示每個人走到哪一步。</p>
+    <p class="${RC.configured ? '' : 'muted'}">${esc(status)}</p>
+    ${RC.missing.length ? `<p class="imp-msg">試算表裡找不到這些工作表，對應的欄位會是空的：${esc(RC.missing.join('、'))}</p>` : ''}
+    ${RC.lastError ? `<p class="imp-msg err">上次同步失敗：${esc(RC.lastError)}</p>` : ''}
+    <div class="fl-row">
+      <input class="inp" id="rc-url" type="url" value="${esc(url)}" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="履歷篩選試算表網址">
+      <button class="btn primary" type="button" data-u="rc-link"${RC.busy ? ' disabled' : ''}>${RC.configured ? '重新連結' : '連結'}</button>
+    </div>
+    ${RC.msg ? `<p class="imp-msg${RC.msgErr ? ' err' : ''}" role="status">${esc(RC.msg)}</p>` : ''}
+    ${RC.configured ? `<div class="fl-row">${RC.confirmUnlink
+      ? '<span class="confirm-q" style="width:auto">確定取消連結？「招募」頁前三欄會清空，試算表不受影響。</span><button class="btn sm danger-solid" type="button" data-u="rc-unlink-yes">取消連結</button><button class="btn sm ghost" type="button" data-u="rc-cancel">不要</button>'
+      : `<button class="btn sm" type="button" data-u="rc-sync"${RC.busy ? ' disabled' : ''}>立即同步</button><button class="btn sm ghost danger" type="button" data-u="rc-unlink">取消連結</button>`}</div>` : ''}
+  </section>`;
+}
+async function recruitAdmin(action, payload, okMsg){
+  RC.busy = true; RC.msg = action === 'recruitLink' ? '連結中，第一次讀取試算表要幾秒鐘…' : '處理中…'; RC.msgErr = false; renderUsers();
+  try {
+    const j = await AU.api(action, payload || {});
+    if (action === 'formSync') { applyFormStatus(j); } else applyRecruitStatus(j);
+    const st = action === 'formSync' ? j.rc : j;
+    RC.draft = null; RC.confirmUnlink = false;
+    RC.msg = okMsg(st || {}); RC.msgErr = !!(st && st.lastError);
+    ST.syncNow();
+  } catch (e) { RC.msg = e.message; RC.msgErr = true; }
+  RC.busy = false; renderUsers();
 }
 
 /* ---------- 人事資料表自動匯入（管理員連結雲端硬碟資料夾） ---------- */
@@ -828,6 +1110,7 @@ function applyFormStatus(j){
   if (typeof j.days === 'number') FS.days = j.days;
   if (typeof j.url === 'string') FS.url = j.url;
   if (j.shareTo) FS.shareTo = j.shareTo;
+  if (j.rc) applyRecruitStatus(j.rc);
   FS.loaded = true;
 }
 async function formSync(force){
@@ -837,8 +1120,8 @@ async function formSync(force){
   try {
     const j = await AU.api('formSync', force ? {force:true} : {});
     applyFormStatus(j);
-    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試資料」`); ST.syncNow(); }
-    else if (j.updated) ST.syncNow();
+    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試」`); ST.syncNow(); }
+    else if (j.updated || (j.rc && j.rc.changed)) ST.syncNow();
     if (S.view === 'users') renderUsers();
   } catch (e) { /* 同步失敗不打擾使用者，下次再試 */ }
 }
@@ -847,7 +1130,8 @@ async function loadFormStatus(){
   try {
     const j = await AU.api('formSync', {});
     applyFormStatus(j);
-    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試資料」`); ST.syncNow(); }
+    if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試」`); ST.syncNow(); }
+    else if (j.rc && j.rc.changed) ST.syncNow();
   } catch (e) { FS.msg = e.message; FS.msgErr = true; }
   FS.loading = false; FS.loaded = true;
   if (S.view === 'users') renderUsers();
@@ -863,7 +1147,7 @@ function formSectionHTML(){
   const url = FS.draft != null ? FS.draft : FS.url;
   const opt = (v, t) => `<option value="${v}"${Number(days) === v ? ' selected' : ''}>${t}</option>`;
   return `<section class="ov-card" aria-labelledby="fl-h"><header class="ov-h"><h2 id="fl-h">人事資料表自動匯入</h2></header>
-    <p class="muted">貼上放「人事資料表文件」的雲端硬碟資料夾網址（或表單的回覆試算表）。要先用擁有資料夾的帳號，把資料夾共用給 <b>${esc(FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。之後每 10 分鐘、以及有人打開 App 時，新的應徵者會自動加進「面試資料」；文件之後被修改，App 裡的資料也會跟著更新（評語、進度不會被蓋掉）。</p>
+    <p class="muted">貼上放「人事資料表文件」的雲端硬碟資料夾網址（或表單的回覆試算表）。要先用擁有資料夾的帳號，把資料夾共用給 <b>${esc(FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。之後每 10 分鐘、以及有人打開 App 時，新的應徵者會自動加進「招募」頁的「面試」；文件之後被修改，App 裡的資料也會跟著更新（評語、進度不會被蓋掉）。</p>
     <p class="${FS.configured ? '' : 'muted'}">${esc(status)}</p>
     ${FS.lastError ? `<p class="imp-msg err">上次同步失敗：${esc(FS.lastError)}</p>` : ''}
     <div class="fl-row">
@@ -912,11 +1196,11 @@ async function userCall(action, payload, okMsg){
 const byHTML = name => name ? `・${esc(name)}` : '';
 function stepsHTML(h){
   const canW = canEdit();
-  if (h.stage === 'rejected') {
-    const s = obj(h.steps.interview);
+  if (h.stage === 'rejected' || h.stage === 'declined') {
+    const rej = h.stage === 'rejected', s = obj(h.steps[rej ? 'interview' : 'confirm']);
     return `<section class="sec"><h3>流程進度</h3><ol class="steps"><li class="step rej"><span class="dot">✕</span><div>
-      <div class="step-t">面試結果：未錄取</div>${s.at ? `<div class="step-m">${fmtTime(s.at)}${byHTML(s.by)}</div>` : ''}
-      ${canW ? '<div class="step-a"><button class="btn sm" type="button" data-act="back">重新列入面試</button></div>' : ''}
+      <div class="step-t">${rej ? '面試結果：未錄取' : '確認入職：不來了（婉拒）'}</div>${s.at ? `<div class="step-m">${fmtTime(s.at)}${byHTML(s.by)}</div>` : ''}
+      ${canW ? `<div class="step-a"><button class="btn sm" type="button" data-act="back">${rej ? '重新列入面試' : '改回確認入職'}</button></div>` : ''}
     </div></li></ol></section>`;
   }
   const cur = FLOW.indexOf(h.stage);
@@ -929,6 +1213,7 @@ function stepsHTML(h){
       meta = esc(STEP_HINT[d.key]);
       if (canW) {
         if (d.key === 'interview') act = '<button class="btn sm primary" type="button" data-act="hire">錄取</button><button class="btn sm" type="button" data-act="reject">未錄取</button>';
+        else if (d.key === 'confirm') act = '<button class="btn sm primary" type="button" data-act="join-yes">要，寄 Offer</button><button class="btn sm" type="button" data-act="join-no">不要（婉拒）</button>';
         else if (d.key === 'docs') {
           const ok = docsReady(h);
           act = `<button class="btn sm primary" type="button" data-act="advance"${ok ? '' : ' disabled'}>${ADV_LABEL.docs}</button>` + (ok ? '' : '<span class="step-note">需先上傳身分證／居留證正反面</span>');
@@ -936,7 +1221,7 @@ function stepsHTML(h){
         if (i > 0) act += '<button class="btn sm ghost" type="button" data-act="back">退回上一步</button>';
       }
     }
-    const title = (d.key === 'interview' && state === 'done') ? '面試結果：錄取' : d.label;
+    const title = (state === 'done' && STEP_DONE[d.key]) || d.label;
     return `<li class="step ${state}"><span class="dot">${state === 'done' ? '✓' : i + 1}</span><div>
       <div class="step-t">${title}</div>${meta ? `<div class="step-m">${meta}</div>` : ''}${act ? `<div class="step-a">${act}</div>` : ''}
     </div></li>`;
@@ -944,6 +1229,20 @@ function stepsHTML(h){
   const tail = h.stage === 'done'
     ? `<div class="all-done"><span class="stamp lg">已加保</span><span>全部步驟完成</span>${canW ? '<button class="btn sm ghost" type="button" data-act="back">退回上一步</button>' : ''}</div>` : '';
   return `<section class="sec"><h3>流程進度</h3><ol class="steps">${rows}</ol>${tail}</section>`;
+}
+/** 抽屜裡的「招募進度」：試算表對到這個人的資料（只能看） */
+function extHTML(h){
+  if (!R.meta) return '';
+  const x = extFor(h), sc = x.screen, iv = x.invite, rs = x.result;
+  if (!sc && !iv && !rs) return '';
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
+  const links = [extLink((rs && rs.cv) || (iv && iv.cv) || (sc && sc.cv), '104 履歷'), extLink(sc && sc.mail, 'Gmail'), extLink(rs && rs.pdf, 'Offer PDF')].filter(Boolean).join('');
+  const body = (sc ? row('AI 篩選', sc.tier + (sc.score != null ? `・${sc.score} 分` : '')) + row('履歷重點', sc.sum) + row('AI 說明', sc.why) : '')
+    + (iv ? row('邀約', [iv.plat, iv.st].filter(Boolean).join('・')) + row('面試時間', iv.ivD ? `${slash(iv.ivD)} ${iv.ivT}` : '') + row('人事資料表', [iv.formSt && '表單' + iv.formSt, iv.formFill].filter(Boolean).join('・')) : '')
+    + (rs ? row('面試結果', rs.res) + row('二面', rs.iv2) + row('錄取決策', rs.dec) + row('104 通知', rs.n104) + row('Offer', rs.offer)
+      + row('預計報到', rs.start ? slash(rs.start) : rs.startRaw) + row('報到安排', [rs.dept, rs.title, rs.time, rs.place, rs.boss && '主管 ' + rs.boss].filter(Boolean).join('・')) + row('備註', rs.note) : '');
+  return `<section class="sec"><h3>招募進度 <span class="h-count">「履歷篩選」試算表・只能看</span></h3>
+    ${body ? `<dl class="fd">${body}</dl>` : ''}${links ? `<p class="ext-links">${links}</p>` : ''}</section>`;
 }
 function slotHTML(h, s, canUp){
   const e = h.docs[s.key];
@@ -1040,7 +1339,7 @@ function refreshDrawer(){
   $('#d-title').textContent = nm(h);
   const pill = $('#d-pill');
   pill.textContent = TITLE[h.stage];
-  pill.className = 'pill' + (h.stage === 'rejected' ? ' rej' : '');
+  pill.className = 'pill' + (h.stage === 'rejected' || h.stage === 'declined' ? ' rej' : '');
   pill.hidden = false;
   $('#iv-form').hidden = false;
   const panel = $('.panel');
@@ -1048,9 +1347,9 @@ function refreshDrawer(){
   panel.classList.toggle('wide', h.stage === 'interview' && !!h.form);
   $('#d-form').innerHTML = h.form ? formDataHTML(h) : '';
   $('#iv-meta').textContent = h.ivAt ? `最後更新 ${fmtTime(h.ivAt)}${h.ivBy ? '・' + h.ivBy : ''}` : '';
-  const steps = stepsHTML(h);
-  const docs = (h.stage !== 'interview' && h.stage !== 'rejected') ? docsHTML(h) : '';
-  $('#d-dyn').innerHTML = h.stage === 'docs' ? docs + steps : steps + docs;
+  const steps = stepsHTML(h), ext = extHTML(h);
+  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '';
+  $('#d-dyn').innerHTML = h.stage === 'docs' ? docs + steps + ext : steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
 }
 const FIELDS = [['f-name','name'],['f-position','position'],['f-dept','dept'],['f-phone','phone'],['f-interview','interviewDate'],['f-ivtime','interviewTime'],['f-start','startDate'],['f-note','note']];
@@ -1205,7 +1504,7 @@ function openImport(){
   if (!canEdit()) return;
   S.imp = {rows:[], sel:new Set()};
   $('#imp-paste').value = ''; $('#imp-file-name').textContent = ''; $('#imp-preview').innerHTML = '';
-  $('#imp-auto').textContent = FS.configured ? '人事資料表已設定自動匯入，新的應徵者會自己出現在「面試資料」。這裡用來補匯入較早的回覆。' : '';
+  $('#imp-auto').textContent = FS.configured ? '人事資料表已設定自動匯入，新的應徵者會自己出現在「招募」頁的「面試」。這裡用來補匯入較早的回覆。' : '';
   $('#imp-auto').hidden = !FS.configured;
   setImpMsg(''); updateImpGo();
   $('#imp').hidden = false;
@@ -1262,7 +1561,7 @@ function runImport(){
     stage:'interview', result:'pending', docs:{}, steps:{}, createdAt:now, createdBy:by, updatedAt:now, updatedBy:by,
     source:'form', formAt:r.at, form:r.form
   })));
-  S.tab = 'interview';
+  S.tabs.recruit = 'interview';
   closeImport();
   toast(`已匯入 ${list.length} 筆面試資料`);
   render();
@@ -1316,7 +1615,7 @@ function render(){
   showView();
   renderViews(); renderBanner(); renderFoot(); renderSync();
   if (S.view === 'overview') renderOverview();
-  else if (S.view === 'pipeline') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
+  else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'users') renderUsers();
   if (S.openId && !S.creating) refreshDrawer();
@@ -1326,10 +1625,11 @@ function render(){
 function viewFromHash(){ const h = location.hash.slice(1); return VIEWS.includes(h) && (h !== 'users' || isAdmin()) ? h : 'overview'; }
 function setView(v){
   S.view = VIEWS.includes(v) && (v !== 'users' || isAdmin()) ? v : 'overview';
+  if (S.view !== 'recruit' && S.batch) { S.batch = false; S.sel.clear(); S.batchConfirm = false; }
   if (location.hash.slice(1) !== S.view) { try { history.replaceState(null, '', '#' + S.view); } catch {} }
   render();
   window.scrollTo(0, 0);
-  if (S.view === 'pipeline' || S.view === 'overview') formSync();
+  if (['recruit','pipeline','overview'].includes(S.view)) formSync();
 }
 
 /* ================= 事件 ================= */
@@ -1347,7 +1647,7 @@ function shiftMonth(delta){
 }
 $('#q').addEventListener('input', e => { S.q = e.target.value.trim(); renderTabs(); renderBoard(); });
 $('#add-btn').addEventListener('click', openCreate);
-$('#tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; S.tab = b.dataset.tab; renderTabs(); renderBoard(); });
+$('#tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; S.tabs[curBoard()] = b.dataset.tab; renderTabs(); renderBoard(); });
 $('#batch-btn').addEventListener('click', () => setBatch(!S.batch));
 $('#batch-bar').addEventListener('change', e => { if (e.target.id === 'batch-date') S.batchDate = e.target.value; });
 $('#batch-bar').addEventListener('click', e => {
@@ -1365,12 +1665,12 @@ $('#batch-bar').addEventListener('click', e => {
 });
 $('#board').addEventListener('change', e => {
   const t = e.target;
-  if (S.batch && t.matches('input[data-pick]') && S.hires.has(t.dataset.pick)) togglePick(t.dataset.pick, t.checked);
+  if (batchOn() && t.matches('input[data-pick]') && S.hires.has(t.dataset.pick)) togglePick(t.dataset.pick, t.checked);
 });
 $('#board').addEventListener('click', e => {
   const pc = e.target.closest('[data-pick-col]');
   if (pc) { togglePickCol(pc.dataset.pickCol); return; }
-  if (S.batch) {
+  if (batchOn()) {
     const c = e.target.closest('.card-open');
     if (c && S.hires.has(c.dataset.id)) togglePick(c.dataset.id);
     return;
@@ -1383,11 +1683,13 @@ $('#board').addEventListener('click', e => {
   else if (act === 'hire') decide(id, true);
   else if (act === 'reject') decide(id, false);
   else if (act === 'advance') advance(id);
+  else if (act === 'join-yes') confirmJoin(id, true);
+  else if (act === 'join-no') confirmJoin(id, false);
 });
 $('#overview-view').addEventListener('click', e => {
   if (e.target.closest('[data-slots]')) { openSlots(); return; }
   const g = e.target.closest('[data-go]');
-  if (g) { if (g.dataset.tab && FLOW.includes(g.dataset.tab)) S.tab = g.dataset.tab; setView(g.dataset.go); return; }
+  if (g) { const tb = g.dataset.tab; if (tb && BOARD_OF[tb]) S.tabs[BOARD_OF[tb]] = tb; setView(g.dataset.go); return; }
   const o = e.target.closest('[data-open]');
   if (o && S.hires.has(o.dataset.open)) openDrawer(o.dataset.open, S.hires.get(o.dataset.open).stage === 'interview' ? 'comment' : null);
 });
@@ -1438,8 +1740,18 @@ $('#users-view').addEventListener('click', e => {
   else if (act === 'fl-unlink') { FS.confirmUnlink = true; renderUsers(); }
   else if (act === 'fl-unlink-yes') formAdmin('formUnlink', {}, () => '已取消連結，已匯入的資料都還在。');
   else if (act === 'fl-cancel') { FS.confirmUnlink = false; renderUsers(); }
+  else if (act === 'rc-link') {
+    const url = $('#rc-url').value.trim();
+    RC.draft = url;
+    if (!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(url)) { RC.msg = '請貼「履歷篩選」Google 試算表的網址（https://docs.google.com/spreadsheets/…）。'; RC.msgErr = true; renderUsers(); return; }
+    recruitAdmin('recruitLink', {url}, j => j.lastError ? '已連結，但讀取失敗，原因見上方。' : `已連結。篩選名單 ${obj(j.counts).screen | 0}、面試邀約 ${obj(j.counts).invite | 0}、面試結果 ${obj(j.counts).result | 0} 筆。`);
+  }
+  else if (act === 'rc-sync') recruitAdmin('formSync', {force:true}, j => j.lastError ? '同步失敗，原因見上方。' : j.changed ? '已同步，有新的變動。' : '已同步，試算表沒有新的變動。');
+  else if (act === 'rc-unlink') { RC.confirmUnlink = true; renderUsers(); }
+  else if (act === 'rc-unlink-yes') recruitAdmin('recruitUnlink', {}, () => '已取消連結。');
+  else if (act === 'rc-cancel') { RC.confirmUnlink = false; renderUsers(); }
 });
-$('#users-view').addEventListener('input', e => { if (e.target.id === 'fl-url') FS.draft = e.target.value; });
+$('#users-view').addEventListener('input', e => { if (e.target.id === 'fl-url') FS.draft = e.target.value; else if (e.target.id === 'rc-url') RC.draft = e.target.value; });
 $('#users-view').addEventListener('change', e => { if (e.target.id === 'fl-days') FS.draftDays = Number(e.target.value); });
 $('#umodal').addEventListener('click', e => { if (e.target.closest('[data-u-close]')) closeUserForm(); });
 $('#u-form').addEventListener('submit', async e => {
@@ -1467,6 +1779,8 @@ $('#drawer').addEventListener('click', e => {
     case 'hire': decide(id, true); break;
     case 'reject': decide(id, false); break;
     case 'advance': advance(id); break;
+    case 'join-yes': confirmJoin(id, true); break;
+    case 'join-no': confirmJoin(id, false); break;
     case 'back': stepBack(id); break;
     case 'zoom': { const p = PH.get(b.dataset.fid); if (p && p.url) openLightbox(p.url); break; }
     case 'pdf': { const p = PH.get(b.dataset.fid); if (p && p.url) window.open(p.url, '_blank', 'noopener'); break; }
@@ -1495,7 +1809,7 @@ $('#info-form').addEventListener('submit', e => {
   if (S.creating) {
     const id = rid('h'), now = Date.now(), by = myName();
     ST.save('hires', {id, ...v, stage:'interview', result:'pending', docs:{}, steps:{}, createdAt:now, createdBy:by, updatedAt:now, updatedBy:by});
-    S.tab = 'interview';
+    S.tabs.recruit = 'interview';
     toast(`已新增 ${v.name}，可以開始填寫面試評語`);
     pullFromStore(); render();
     openDrawer(id, 'comment');
@@ -1587,7 +1901,7 @@ AU.on(() => { U.list = null; schedule(); });
 S.view = viewFromHash();
 pullFromStore(); render();
 AU.ready.then(() => { S.view = viewFromHash(); pullFromStore(); render(); formSync(); });
-// 打開 App、切回 App 時順便同步人事資料表（雲端後端另外每 10 分鐘同步一次）
+// 打開 App、切回 App 時順便同步人事資料表與履歷篩選試算表（雲端後端另外每 10 分鐘同步一次）
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') formSync(); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => { navigator.serviceWorker.register('service-worker.js').catch(() => {}); });

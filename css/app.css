@@ -127,7 +127,7 @@ img{max-width:100%}
 
 /* board */
 .board-scroll{overflow-x:auto;padding-bottom:8px}
-.board{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:start}
+.board{display:grid;grid-template-columns:repeat(var(--cols,6),minmax(0,1fr));gap:10px;align-items:start}
 .col{background:var(--col);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;min-width:0;min-height:220px}
 .col-h{display:flex;align-items:center;gap:8px;padding:2px 4px 0}
 .col-n{width:20px;height:20px;flex:none;border-radius:50%;border:1.5px solid var(--accent);color:var(--accent);font-family:var(--mono);font-size:11px;display:grid;place-items:center;line-height:1}
@@ -159,6 +159,21 @@ img{max-width:100%}
 .rej li{display:flex;gap:8px;align-items:baseline;font-size:13px;min-width:0}
 .rej li span{color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .foot-note{color:var(--ink-3);font-size:12px;padding-block:10px 4px;margin:0}
+/* 招募前三欄：「履歷篩選」試算表的資料，只能看（虛線框、沒有按鈕） */
+.col.is-ext .col-n{border-style:dashed}
+.card.ext{border-style:dashed;box-shadow:none}
+.c-head{display:flex;flex-direction:column;gap:1px;min-width:0}
+.c-why{margin:0;font-size:12px;line-height:1.5;color:var(--ink-2);display:flex;flex-direction:column;gap:2px}
+.c-why span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.c-why span+span{color:var(--ink-3)}
+.c-links{display:flex;gap:12px;flex-wrap:wrap;font-size:12.5px}
+.c-links .link,.ext-links .link{font-weight:500}
+.rej li a.link{flex:none}
+.rej li b{font-weight:500;flex:none}
+.ext-links{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 0;font-size:13px}
+.fm-h{font-size:12px;font-weight:700;letter-spacing:.06em;color:var(--ink-2);margin:4px 0 6px}
+.fm-h+.flow-mini{margin-bottom:10px}
+a.btn{text-decoration:none;color:inherit}
 
 /* interview slots */
 .sl-link{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -198,7 +213,7 @@ img{max-width:100%}
 .foot{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;align-items:center;color:var(--ink-3);font-size:12px;padding-block:18px 28px;border-top:1px solid var(--line);margin-top:18px}
 .foot b{color:var(--ink-2)}
 
-@media (max-width:1240px){ .board{grid-template-columns:repeat(6,232px)} }
+@media (max-width:1240px){ .board{grid-template-columns:repeat(var(--cols,6),232px)} }
 @media (max-width:760px){
   .tabs{display:flex}
   .board{grid-template-columns:minmax(0,1fr)}
