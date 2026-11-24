@@ -160,6 +160,22 @@ img{max-width:100%}
 .rej li span{color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .foot-note{color:var(--ink-3);font-size:12px;padding-block:10px 4px;margin:0}
 
+/* interview slots */
+.sl-link{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sl-link input{flex:1 1 260px;height:34px;border:1px solid var(--control);border-radius:8px;background:var(--col);padding:0 10px;font-family:var(--mono);font-size:12.5px;min-width:0}
+.sl-add{display:grid;grid-template-columns:150px minmax(0,1fr) 90px auto;gap:8px;align-items:end}
+.sl-add .f input{height:34px}
+.sl-day{border-top:1px solid var(--line);padding-top:10px}
+.sl-day h3{margin:0 0 6px;font-family:var(--head);font-size:15px}
+.sl-row{display:grid;grid-template-columns:60px 70px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 0;border-top:1px dashed var(--line)}
+.sl-row:first-of-type{border-top:0}
+.sl-time{font-family:var(--mono);font-weight:500;font-variant-numeric:tabular-nums}
+.sl-cnt{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.sl-who{display:flex;flex-wrap:wrap;gap:4px 10px;min-width:0;font-size:13px}
+.sl-row.closed .sl-time{text-decoration:line-through;color:var(--ink-3)}
+.sl-acts{display:flex;gap:4px}
+@media (max-width:560px){ .sl-add{grid-template-columns:1fr 1fr} .sl-row{grid-template-columns:56px 64px minmax(0,1fr)} .sl-acts{grid-column:1/-1;justify-content:flex-end} }
+
 /* batch tidy-up */
 .btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .pick{position:absolute;top:10px;left:10px;display:flex}

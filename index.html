@@ -49,6 +49,7 @@
         </div>
         <input class="inp" type="search" id="q" placeholder="搜尋姓名、職位、部門" aria-label="搜尋">
         <span class="sp"></span>
+        <button class="btn" id="slot-btn" type="button">面試時段</button>
         <button class="btn" id="batch-btn" type="button" aria-pressed="false">批次整理</button>
         <button class="btn" id="imp-btn" type="button">匯入表單回覆</button>
         <button class="btn primary" id="add-btn" type="button">＋ 新增面試者</button>
@@ -84,6 +85,7 @@
           <div class="f"><label for="f-dept">部門</label><input id="f-dept" autocomplete="off" maxlength="60"></div>
           <div class="f"><label for="f-phone">聯絡電話</label><input id="f-phone" type="tel" autocomplete="off" maxlength="30"></div>
           <div class="f"><label for="f-interview">面試日期</label><input id="f-interview" type="date"></div>
+          <div class="f"><label for="f-ivtime">面試時間</label><input id="f-ivtime" type="time"></div>
           <div class="f"><label for="f-start">預計到職日</label><input id="f-start" type="date"></div>
           <div class="f full"><label for="f-note">備註</label><textarea id="f-note" rows="2" maxlength="1000"></textarea></div>
         </div>
@@ -150,6 +152,17 @@
       </div>
       <div class="m-foot"><button class="btn ghost" type="button" data-u-close="1">取消</button><button class="btn primary" type="submit" id="u-save">儲存</button></div>
     </form>
+  </div>
+</div>
+
+<div class="modal" id="slm" hidden>
+  <div class="scrim" data-sl-close="1"></div>
+  <div class="m-panel" role="dialog" aria-modal="true" aria-labelledby="sl-title">
+    <div class="p-head">
+      <div class="p-title"><h2 id="sl-title">面試時段</h2></div>
+      <button class="btn icon" type="button" data-sl-close="1" aria-label="關閉">✕</button>
+    </div>
+    <div class="m-body" id="sl-body"></div>
   </div>
 </div>
 

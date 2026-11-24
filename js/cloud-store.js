@@ -17,9 +17,9 @@
   var STORE = 'kv';
   var POLL_MS = 30000;
   var PUSH_DELAY_MS = 800;
-  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾' };
+  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段' };
   var MONTHLY = ['checks'];   // 依日期年月分檔的種類（資料要有 date 欄位）
-  var KEY_RE = /^(hires|routines|checks_\d{6})$/;
+  var KEY_RE = /^(hires|routines|slots|checks_\d{6})$/;
 
   var parts = Object.create(null);   // 類別 -> JSON 字串（目前本機值，陣列）
   var bases = Object.create(null);   // 類別 -> 上次與雲端一致時的 JSON 字串（僅本機有未上傳修改時保存）

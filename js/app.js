@@ -144,6 +144,7 @@ function norm(id, d){
   return {
     id, name:str(d.name), position:str(d.position), dept:str(d.dept), phone:str(d.phone), note:str(d.note),
     interviewDate: isDate(d.interviewDate) ? d.interviewDate : '', startDate: isDate(d.startDate) ? d.startDate : '',
+    interviewTime: /^\d{2}:\d{2}$/.test(d.interviewTime || '') ? d.interviewTime : '', slotId: str(d.slotId), source: str(d.source),
     stage, result: ['hired','rejected'].includes(d.result) ? d.result : 'pending',
     docs, steps:obj(d.steps), createdAt: typeof d.createdAt === 'number' ? d.createdAt : null, createdBy:str(d.createdBy),
     interviewer:str(d.interviewer), rating: RATING_KEYS.includes(d.rating) ? d.rating : '', comment:str(d.comment),
@@ -375,6 +376,7 @@ function renderToolbar(){
   $('#m-label').textContent = `${y} 年 ${+m} 月`;
   $('#m-next').disabled = S.month >= curMonth();
   $('#imp-btn').hidden = !canEdit();
+  $('#slot-btn').hidden = !canEdit();
   const bb = $('#batch-btn');
   bb.hidden = !canEdit();
   bb.classList.toggle('on', S.batch);
@@ -414,7 +416,8 @@ function cardHTML(h){
   const id = esc(h.id), canW = canEdit();
   const chips = [], acts = [];
   if (h.stage === 'interview') {
-    if (h.interviewDate) chips.push(chip(`面試 ${md(h.interviewDate)}`));
+    if (h.interviewDate) chips.push(h.interviewDate === today() ? chip(`今天 ${h.interviewTime || ''} 面試`, 'warn') : chip(`面試 ${md(h.interviewDate)}${h.interviewTime ? ' ' + h.interviewTime : ''}`));
+    if (h.source === 'web') chips.push(chip('線上應徵', 'ok'));
     else if (h.formAt) chips.push(chip(`填表 ${md(tsDate(h.formAt))}`));
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
@@ -477,6 +480,70 @@ function renderBoard(){
   }).join('');
   const det = $('#board details.rej');
   if (det) det.addEventListener('toggle', () => { S.rejOpen = det.open; });
+}
+
+/* ================= 面試時段（線上應徵表單 apply.html 讓應徵者選） ================= */
+const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
+const SL = {confirm:null, msg:'', msgErr:false};
+const WD_ = '日一二三四五六';
+const dayLabel = s => { const d = new Date(s + 'T00:00:00'); return `${d.getMonth() + 1}/${d.getDate()}（${WD_[d.getDay()]}）`; };
+function slotList(){
+  return ST.list('slots').filter(s => s && isDate(s.date) && /^\d{2}:\d{2}$/.test(s.time || ''))
+    .map(s => ({id:String(s.id), date:s.date, time:s.time, cap:Math.max(1, Number(s.cap) || 1), closed:!!s.closed}))
+    .sort((a, b) => (a.date + a.time) < (b.date + b.time) ? -1 : 1);
+}
+function slotBookings(){
+  const m = new Map();
+  for (const h of S.hires.values()) if (h.slotId) { if (!m.has(h.slotId)) m.set(h.slotId, []); m.get(h.slotId).push(h); }
+  return m;
+}
+function openSlots(){ if (!canEdit()) return; SL.confirm = null; SL.msg = ''; renderSlots(); $('#slm').hidden = false; document.documentElement.classList.add('lock'); }
+function closeSlots(){ $('#slm').hidden = true; if ($('#drawer').hidden) document.documentElement.classList.remove('lock'); }
+function renderSlots(){
+  if ($('#slm').hidden && !SL.rendering) { /* 視窗沒開就不畫 */ }
+  const root = $('#sl-body'), t = today();
+  const keep = {}; root.querySelectorAll('input').forEach(i => { if (i.id) keep[i.id] = i.value; });
+  const all = slotList(), books = slotBookings();
+  const upcoming = all.filter(s => s.date >= t), pastN = all.length - upcoming.length;
+  const byDay = new Map();
+  upcoming.forEach(s => { if (!byDay.has(s.date)) byDay.set(s.date, []); byDay.get(s.date).push(s); });
+  const days = [...byDay.entries()].map(([d, list]) => `<section class="sl-day"><h3>${dayLabel(d)}</h3>${list.map(s => {
+    const who = books.get(s.id) || [], full = who.length >= s.cap, sid = esc(s.id);
+    const acts = SL.confirm === s.id
+      ? `<button class="btn sm danger-solid" type="button" data-sl="del-yes" data-id="${sid}">確定刪除</button><button class="btn sm ghost" type="button" data-sl="cancel">取消</button>`
+      : `<button class="btn sm ghost" type="button" data-sl="toggle" data-id="${sid}">${s.closed ? '重新開放' : '關閉'}</button>${who.length ? '' : `<button class="btn sm ghost danger" type="button" data-sl="del" data-id="${sid}">刪除</button>`}`;
+    return `<div class="sl-row${s.closed ? ' closed' : ''}"><span class="sl-time">${esc(s.time)}</span>
+      <span class="sl-cnt">${s.closed ? '已關閉' : full ? `<b>額滿</b> ${who.length}/${s.cap}` : `${who.length}/${s.cap} 人`}</span>
+      <span class="sl-who">${who.map(h => `<button class="link" type="button" data-sl="open" data-id="${esc(h.id)}">${esc(nm(h))}</button>`).join('') || '<span class="muted">還沒有人預約</span>'}</span>
+      <span class="sl-acts">${acts}</span></div>`;
+  }).join('')}</section>`).join('');
+  root.innerHTML = `
+    <div class="f"><span class="lbl">應徵連結（傳給應徵者，不用登入）</span>
+      <div class="sl-link"><input id="sl-url" readonly value="${esc(APPLY_URL)}" aria-label="應徵連結"><button class="btn sm" type="button" data-sl="copy">複製</button><a class="btn sm" href="${esc(APPLY_URL)}" target="_blank" rel="noopener">開啟</a></div>
+      <p class="note top" style="margin-top:6px">應徵者打開連結，先選一個還有空位的時段，再填人事資料表；送出後直接出現在「面試資料」，面試日期和時間都會帶入。用 LINE 傳時在網址後面加 <code>?openExternalBrowser=1</code>。</p></div>
+    <form class="sl-add" id="sl-form" novalidate>
+      <div class="f"><label for="sl-date">日期</label><input id="sl-date" type="date" value="${esc(keep['sl-date'] || '')}"></div>
+      <div class="f"><label for="sl-times">時間（可以一次填多個，用空白或逗號分開）</label><input id="sl-times" placeholder="例如 10:00 10:30 14:00" value="${esc(keep['sl-times'] || '')}"></div>
+      <div class="f"><label for="sl-cap">每個時段幾人</label><input id="sl-cap" type="number" min="1" max="20" value="${esc(keep['sl-cap'] || '1')}"></div>
+      <button class="btn primary" type="submit">新增時段</button>
+    </form>
+    <p class="imp-msg${SL.msgErr ? ' err' : ''}" id="sl-msg" role="status">${esc(SL.msg)}</p>
+    ${days || '<p class="rt-empty">還沒有今天以後的面試時段。先選日期、填時間，按「新增時段」。</p>'}
+    ${pastN ? `<p class="muted">另有 ${pastN} 個過去的時段（不再顯示，也不能預約）。</p>` : ''}`;
+}
+function addSlots(){
+  const date = $('#sl-date').value, cap = Math.min(20, Math.max(1, parseInt($('#sl-cap').value, 10) || 1));
+  const fail = t => { SL.msg = t; SL.msgErr = true; renderSlots(); };
+  const times = [...new Set(($('#sl-times').value.match(/\d{1,2}[:：]\d{2}/g) || []).map(x => { const [h, m] = x.replace('：', ':').split(':'); return pad(+h) + ':' + m; }))].filter(x => /^([01]\d|2[0-3]):[0-5]\d$/.test(x));
+  if (!isDate(date)) return fail('請選日期。');
+  if (date < today()) return fail('不能新增過去的日期。');
+  if (!times.length) return fail('請填時間，例如 10:00 14:30。');
+  const have = new Set(slotList().filter(s => s.date === date).map(s => s.time));
+  const fresh = times.filter(x => !have.has(x)), now = Date.now(), by = myName();
+  if (fresh.length) ST.saveMany('slots', fresh.map(time => ({id:rid('s'), date, time, cap, closed:false, createdAt:now, createdBy:by})));
+  $('#sl-times').value = '';
+  SL.msg = `已新增 ${dayLabel(date)} ${fresh.length} 個時段${times.length > fresh.length ? `（${times.length - fresh.length} 個已經有了）` : ''}。`; SL.msgErr = false;
+  renderSlots();
 }
 
 /* ================= 批次整理（勾選多人一次錄取、未錄取、刪除） ================= */
@@ -601,9 +668,16 @@ function renderOverview(){
     const pct = items.length ? Math.round(n / items.length * 100) : 0;
     return `<div class="ov-rt${i === 0 ? ' first' : ''}"><div class="rt-h"><h3>${f.title}</h3><span class="rt-period">${periodLabel(f.key)}</span><span class="rt-prog">${items.length ? `${n}/${items.length}` : ''}</span></div>${items.length ? `<div class="rt-bar" aria-hidden="true"><i style="width:${pct}%"></i></div>` : ''}${body}</div>`;
   }).join('');
+  const t0 = today();
+  const ups = [...S.hires.values()].filter(h => h.stage === 'interview' && h.interviewDate && h.interviewDate >= t0)
+    .sort((a, b) => (a.interviewDate + (a.interviewTime || '99:99')) < (b.interviewDate + (b.interviewTime || '99:99')) ? -1 : 1);
+  const upHTML = !S.loaded ? '<p class="rt-empty">讀取中…</p>' : ups.length
+    ? `<ul class="ov-list">${ups.slice(0, 8).map(h => `<li><button class="ov-row" type="button" data-open="${esc(h.id)}"><span class="ov-who"><span class="ov-name">${esc(nm(h))}</span><span class="ov-sub">${esc([h.position, h.source === 'web' ? '線上應徵' : ''].filter(Boolean).join('・'))}</span></span>${chip((h.interviewDate === t0 ? '今天' : dayLabel(h.interviewDate)) + (h.interviewTime ? ' ' + h.interviewTime : ''), h.interviewDate === t0 ? 'warn' : '')}</button></li>`).join('')}</ul>${ups.length > 8 ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="interview">還有 ${ups.length - 8} 位 →</button>` : ''}`
+    : '<p class="rt-empty">接下來沒有排定的面試。</p>';
   root.innerHTML = `<p class="ov-date">今天 ${dateLabel}</p>
     <div class="ov-grid">
       <div class="ov-col">
+        <section class="ov-card" aria-labelledby="ov-up-h"><header class="ov-h"><h2 id="ov-up-h">近期面試</h2>${canEdit() ? '<button class="link" type="button" data-slots="1">面試時段 →</button>' : ''}</header>${upHTML}</section>
         <section class="ov-card" aria-labelledby="ov-alert-h"><header class="ov-h"><h2 id="ov-alert-h">需要處理</h2></header>${alertBody}</section>
         <section class="ov-card" aria-labelledby="ov-flow-h"><header class="ov-h"><h2 id="ov-flow-h">新進人員・勞健保</h2><button class="link" type="button" data-go="pipeline">開啟看板 →</button></header><div class="flow-mini">${flow}</div></section>
       </div>
@@ -979,7 +1053,7 @@ function refreshDrawer(){
   $('#d-dyn').innerHTML = h.stage === 'docs' ? docs + steps : steps + docs;
   $('#d-foot').innerHTML = footHTML(h);
 }
-const FIELDS = [['f-name','name'],['f-position','position'],['f-dept','dept'],['f-phone','phone'],['f-interview','interviewDate'],['f-start','startDate'],['f-note','note']];
+const FIELDS = [['f-name','name'],['f-position','position'],['f-dept','dept'],['f-phone','phone'],['f-interview','interviewDate'],['f-ivtime','interviewTime'],['f-start','startDate'],['f-note','note']];
 function fillForm(h){
   const ro = !canEdit();
   for (const [fid, key] of FIELDS) { const el = $('#' + fid); el.value = h ? h[key] : ''; el.disabled = ro; }
@@ -993,6 +1067,7 @@ function readForm(){
   for (const [fid, key] of FIELDS) v[key] = $('#' + fid).value.trim();
   if (!isDate(v.interviewDate)) v.interviewDate = '';
   if (!isDate(v.startDate)) v.startDate = '';
+  if (!/^\d{2}:\d{2}$/.test(v.interviewTime)) v.interviewTime = '';
   return v;
 }
 function setSaveState(t, err){ const el = $('#save-state'); el.textContent = t; el.className = 'save-state' + (err ? ' err' : ''); }
@@ -1246,6 +1321,7 @@ function render(){
   else if (S.view === 'users') renderUsers();
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
+  if (!$('#slm').hidden) renderSlots();
 }
 function viewFromHash(){ const h = location.hash.slice(1); return VIEWS.includes(h) && (h !== 'users' || isAdmin()) ? h : 'overview'; }
 function setView(v){
@@ -1309,6 +1385,7 @@ $('#board').addEventListener('click', e => {
   else if (act === 'advance') advance(id);
 });
 $('#overview-view').addEventListener('click', e => {
+  if (e.target.closest('[data-slots]')) { openSlots(); return; }
   const g = e.target.closest('[data-go]');
   if (g) { if (g.dataset.tab && FLOW.includes(g.dataset.tab)) S.tab = g.dataset.tab; setView(g.dataset.go); return; }
   const o = e.target.closest('[data-open]');
@@ -1438,10 +1515,30 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!$('#lightbox').hidden) closeLightbox();
   else if (!$('#umodal').hidden) closeUserForm();
+  else if (!$('#slm').hidden) closeSlots();
   else if (!$('#imp').hidden) closeImport();
   else if (!$('#drawer').hidden) closeDrawer();
 });
 $('#imp-btn').addEventListener('click', openImport);
+$('#slot-btn').addEventListener('click', openSlots);
+$('#slm').addEventListener('click', e => {
+  if (e.target.closest('[data-sl-close]')) { closeSlots(); return; }
+  const b = e.target.closest('[data-sl]'); if (!b) return;
+  const id = b.dataset.id, cur = id ? ST.get('slots', id) : null;
+  switch (b.dataset.sl) {
+    case 'copy': {
+      const inp = $('#sl-url');
+      Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(inp.value)).then(() => toast('已複製應徵連結')).catch(() => { inp.select(); toast('請按 Ctrl+C 複製'); });
+      break;
+    }
+    case 'toggle': if (cur) { ST.save('slots', Object.assign(JSON.parse(JSON.stringify(cur)), {closed:!cur.closed})); renderSlots(); } break;
+    case 'del': SL.confirm = id; renderSlots(); break;
+    case 'del-yes': if (cur) ST.remove('slots', id); SL.confirm = null; renderSlots(); break;
+    case 'cancel': SL.confirm = null; renderSlots(); break;
+    case 'open': if (S.hires.has(id)) { closeSlots(); openDrawer(id, S.hires.get(id).stage === 'interview' ? 'comment' : null); } break;
+  }
+});
+$('#slm').addEventListener('submit', e => { if (e.target.id === 'sl-form') { e.preventDefault(); addSlots(); } });
 $('#imp-close').addEventListener('click', closeImport);
 $('#imp-cancel').addEventListener('click', closeImport);
 $('#imp').addEventListener('click', e => { if (e.target.closest('[data-imp-close]')) closeImport(); });
