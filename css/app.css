@@ -182,7 +182,7 @@ a.btn{text-decoration:none;color:inherit}
 .sl-add .f input{height:34px}
 .sl-day{border-top:1px solid var(--line);padding-top:10px}
 .sl-day h3{margin:0 0 6px;font-family:var(--head);font-size:15px}
-.sl-row{display:grid;grid-template-columns:60px 70px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 0;border-top:1px dashed var(--line)}
+.sl-row{display:grid;grid-template-columns:60px 128px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 0;border-top:1px dashed var(--line)}
 .sl-row:first-of-type{border-top:0}
 .sl-time{font-family:var(--mono);font-weight:500;font-variant-numeric:tabular-nums}
 .sl-cnt{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
@@ -190,6 +190,34 @@ a.btn{text-decoration:none;color:inherit}
 .sl-row.closed .sl-time{text-decoration:line-through;color:var(--ink-3)}
 .sl-acts{display:flex;gap:4px}
 @media (max-width:560px){ .sl-add{grid-template-columns:1fr 1fr} .sl-row{grid-template-columns:56px 64px minmax(0,1fr)} .sl-acts{grid-column:1/-1;justify-content:flex-end} }
+/* 面試時段：每週可預約時間（像 Google 預約時間表） */
+.sw{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:12px 14px;margin:14px 0}
+.sw-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.sw-head h3{margin:0;font-family:var(--head);font-size:16px;color:var(--accent)}
+.sw-on{display:inline-flex;gap:6px;align-items:center;font-size:14px;cursor:pointer}
+.sw-on input,.sw-copy input{accent-color:var(--accent);width:16px;height:16px}
+.sw-opts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px 0 4px}
+.sw-opts .f input,.sw-opts .f select{height:34px}
+.sw-days{border-top:1px solid var(--line);margin-top:6px}
+.sw-day{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px dashed var(--line)}
+.sw-dn{font-weight:600;padding-top:6px}
+.sw-rgs{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sw-rg{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sw-rg input[type=time]{height:34px;border:1px solid var(--control);border-radius:8px;background:var(--surface);color:var(--ink);padding:0 8px;font-family:var(--font);font-size:14px;font-variant-numeric:tabular-nums}
+.sw-rg input[type=time]:focus-visible{outline:2px solid var(--cd-green);outline-offset:1px}
+.sw-off{margin:0;padding-top:6px;color:var(--ink-3)}
+.sw-acts{display:flex;gap:4px;padding-top:2px}
+.sw-copy{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;background:var(--col);border-radius:8px;padding:8px 10px;font-size:13px}
+.sw-copy label{display:inline-flex;gap:4px;align-items:center;cursor:pointer}
+.sw-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:10px}
+.sw-sum{margin-right:auto;font-size:13px;color:var(--ink-2)}
+.sl-more{margin:6px 0 10px}
+.sl-more summary{cursor:pointer;font-weight:600;padding:6px 0}
+.sl-list-h{font-family:var(--head);font-size:16px;margin:14px 0 6px}
+.sl-day h3{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sl-day h3 .btn{font-family:var(--font);font-weight:400}
+.sl-tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--col);color:var(--ink-2);font-size:11px}
+@media (max-width:560px){ .sw-opts{grid-template-columns:1fr 1fr} .sw-day{grid-template-columns:40px minmax(0,1fr)} .sw-acts{grid-column:2} }
 
 /* batch tidy-up */
 .btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
@@ -260,7 +288,7 @@ a.btn{text-decoration:none;color:inherit}
 .save-state{font-size:12.5px;color:var(--ink-3)}
 .save-state.err{color:var(--danger)}
 .note{font-size:12px;color:var(--ink-3);margin:10px 0 0}
-.note.top{margin:0 0 10px}
+.note.lead{margin:0 0 10px}
 .rating{position:relative;display:flex;flex-wrap:wrap;gap:6px}
 .f .rating input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
 .f .rating label{cursor:pointer;height:32px;padding:0 14px;border-radius:8px;border:1px solid var(--control);background:var(--surface);display:inline-flex;align-items:center;font-size:13px;color:var(--ink)}

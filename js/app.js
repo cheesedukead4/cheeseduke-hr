@@ -493,10 +493,10 @@ function critCount(h, j){
 }
 function jobHTML(h){
   const canW = canEdit();
-  if (!S.jobs.length) return `<h3>職缺條件</h3><p class="note top">${isAdmin() ? '還沒有設定職缺條件。到「管理」頁的「職缺條件」新增後，面試時這裡會出現該職缺的條件，可以逐項勾選對照。' : '管理員還沒有設定職缺條件。'}</p>`;
+  if (!S.jobs.length) return `<h3>職缺條件</h3><p class="note lead">${isAdmin() ? '還沒有設定職缺條件。到「管理」頁的「職缺條件」新增後，面試時這裡會出現該職缺的條件，可以逐項勾選對照。' : '管理員還沒有設定職缺條件。'}</p>`;
   const j = jobFor(h), auto = h.crit.job ? jobFor(Object.assign({}, h, {crit:{job:'', ok:h.crit.ok}})) : j;
   const sel = `<select class="inp" id="job-sel" aria-label="對照的職缺"${canW ? '' : ' disabled'}><option value="">${auto ? `依應徵職位自動判斷（${esc(auto.title)}）` : '選擇職缺…'}</option>${S.jobs.map(x => `<option value="${esc(x.id)}"${h.crit.job === x.id ? ' selected' : ''}>${esc(x.title)}</option>`).join('')}</select>`;
-  if (!j) return `<h3>職缺條件</h3><div class="job-head">${sel}</div><p class="note top">看不出應徵職位「${esc(h.position || '未填')}」對應哪個職缺，請在上面選擇。</p>`;
+  if (!j) return `<h3>職缺條件</h3><div class="job-head">${sel}</div><p class="note lead">看不出應徵職位「${esc(h.position || '未填')}」對應哪個職缺，請在上面選擇。</p>`;
   const ok = new Set(h.crit.ok), c = critCount(h, j);
   const body = parseJob(j.text).map(s => {
     const n = s.items.filter(i => ok.has(i.key)).length;
@@ -948,54 +948,196 @@ function renderBoard(){
   board.querySelectorAll('details[data-fold]').forEach(det => det.addEventListener('toggle', () => { S.open[det.dataset.fold] = det.open; }));
 }
 
-/* ================= 面試時段（線上應徵表單 apply.html 讓應徵者選） ================= */
+/* ================= 面試時段（線上應徵表單 apply.html 讓應徵者選） =================
+ * 像 Google 日曆的預約時間表：設定每週固定可以面試的時間（slots 裡 id '_week' 的一筆），
+ * 系統自動產生未來幾天的時段（id 'w日期T時間'）；某個時段不要了就「關閉」（存一筆同 id、closed 的紀錄蓋過去）。
+ * 另外也可以加開單次時段（隨機 id，照舊）。產生規則和雲端後端 Code.gs 的 slotExpand_ 相同，改一邊要改另一邊。 */
 const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
-const SL = {confirm:null, msg:'', msgErr:false};
+const SL = {confirm:null, msg:'', msgErr:false, wk:null, dirty:false, copyFrom:null};
 const WD_ = '日一二三四五六';
+const SL_DURS = [15, 20, 30, 45, 60, 90, 120];
+const SL_AHEAD = [7, 14, 21, 30, 60];
+const SL_NOTICE = [0, 1, 2, 3, 4, 6, 12, 24, 48];
 const dayLabel = s => { const d = new Date(s + 'T00:00:00'); return `${d.getMonth() + 1}/${d.getDate()}（${WD_[d.getDay()]}）`; };
-function slotList(){
-  return ST.list('slots').filter(s => s && isDate(s.date) && /^\d{2}:\d{2}$/.test(s.time || ''))
-    .map(s => ({id:String(s.id), date:s.date, time:s.time, cap:Math.max(1, Number(s.cap) || 1), closed:!!s.closed}))
-    .sort((a, b) => (a.date + a.time) < (b.date + b.time) ? -1 : 1);
+const slHm = s => { const m = /^(\d{2}):(\d{2})$/.exec(String(s || '')); return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : -1; };
+const slFmt = n => pad(Math.floor(n / 60)) + ':' + pad(n % 60);
+const slNum = (v, lo, hi, dft) => { const n = Number(v); return v !== '' && v != null && Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : dft; };
+/** 每週規則（存的格式：days 的值是 [['15:00','16:30'], …]） */
+function slWeekNorm(w){
+  if (!w || typeof w !== 'object') return null;
+  const days = {};
+  for (let d = 0; d < 7; d++) days[d] = (w.days && Array.isArray(w.days[d]) ? w.days[d] : [])
+    .filter(r => Array.isArray(r) && slHm(r[0]) >= 0 && slHm(r[1]) > slHm(r[0])).map(r => [r[0], r[1]]).slice(0, 12);
+  return {on: w.on !== false, dur: SL_DURS.includes(Number(w.dur)) ? Number(w.dur) : 30, cap: slNum(w.cap, 1, 20, 1), ahead: slNum(w.ahead, 1, 90, 14), notice: slNum(w.notice, 0, 72, 2), days};
 }
+const slWeekStored = () => slWeekNorm(ST.get('slots', '_week'));
+const slNowStr = () => { const d = new Date(); return today() + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+/** 最晚可以預約的時間點（現在＋notice 小時） */
+const slCut = week => { const d = new Date(Date.now() + (week ? week.notice : 0) * 3600000); return ymd(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+/** 單次時段＋每週規則產生的時段（和 Code.gs slotExpand_ 相同） */
+function slotExpand(week){
+  const out = [], seen = new Set();
+  ST.list('slots').forEach(s => {
+    if (!s || s.id === '_week' || !isDate(s.date) || slHm(s.time) < 0) return;
+    out.push({id:String(s.id), date:s.date, time:s.time, cap:Math.max(1, Number(s.cap) || 1), closed:!!s.closed, rec:true, ovr:!!s.gen});
+    seen.add(String(s.id)); seen.add(s.date + 'T' + s.time);
+  });
+  if (week && week.on) {
+    const t0 = today();
+    for (let i = 0; i < week.ahead; i++) {
+      const date = addDays(t0, i), wd = new Date(date + 'T00:00:00').getDay();
+      week.days[wd].forEach(r => {
+        for (let t = slHm(r[0]); t + week.dur <= slHm(r[1]); t += week.dur) {
+          const time = slFmt(t), id = 'w' + date + 'T' + time;
+          if (seen.has(id) || seen.has(date + 'T' + time)) continue;
+          seen.add(id); seen.add(date + 'T' + time);
+          out.push({id, date, time, cap:week.cap, closed:false, gen:true});
+        }
+      });
+    }
+  }
+  return out;
+}
+function slotList(){ return slotExpand(slWeekStored()).sort((a, b) => (a.date + a.time) < (b.date + b.time) ? -1 : 1); }
 function slotBookings(){
   const m = new Map();
   for (const h of S.hires.values()) if (h.slotId) { if (!m.has(h.slotId)) m.set(h.slotId, []); m.get(h.slotId).push(h); }
   return m;
 }
-function openSlots(){ if (!canEdit()) return; SL.confirm = null; SL.msg = ''; renderSlots(); $('#slm').hidden = false; document.documentElement.classList.add('lock'); }
-function closeSlots(){ $('#slm').hidden = true; if ($('#drawer').hidden) document.documentElement.classList.remove('lock'); }
+const slEmptyWeek = () => ({on:true, dur:30, cap:1, ahead:14, notice:2, days:{0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[]}});
+function openSlots(){
+  if (!canEdit()) return;
+  SL.confirm = null; SL.msg = ''; SL.copyFrom = null;
+  if (!SL.dirty) SL.wk = JSON.parse(JSON.stringify(slWeekStored() || slEmptyWeek()));   // 上次沒儲存的變更還留著
+  renderSlots(); $('#slm').hidden = false; document.documentElement.classList.add('lock');
+}
+function closeSlots(){
+  if (SL.dirty && $('#sw-on')) { slReadWeek(); toast('每週時間還沒儲存，再打開「面試時段」還在'); }
+  $('#slm').hidden = true; if ($('#drawer').hidden) document.documentElement.classList.remove('lock');
+}
+/** 依目前編輯中的每週設定，未來幾天會有幾個時段 */
+function slWeekCount(w){
+  let n = 0;
+  for (let i = 0; i < w.ahead; i++) {
+    const wd = new Date(addDays(today(), i) + 'T00:00:00').getDay();
+    w.days[wd].forEach(r => { const a = slHm(r[0]), b = slHm(r[1]); if (a >= 0 && b > a) n += Math.floor((b - a) / w.dur); });
+  }
+  return n;
+}
+function slWeekHTML(){
+  const w = SL.wk, opt = (list, v, f) => list.map(x => `<option value="${x}"${x === v ? ' selected' : ''}>${f(x)}</option>`).join('');
+  const rows = [0, 1, 2, 3, 4, 5, 6].map(d => {
+    const rs = w.days[d];
+    const ranges = rs.length ? rs.map((r, i) => `<div class="sw-rg">
+        <input type="time" step="300" class="sw-t" data-d="${d}" data-i="${i}" data-k="0" value="${esc(r[0])}" aria-label="週${WD_[d]}第 ${i + 1} 段開始">
+        <span aria-hidden="true">–</span>
+        <input type="time" step="300" class="sw-t" data-d="${d}" data-i="${i}" data-k="1" value="${esc(r[1])}" aria-label="週${WD_[d]}第 ${i + 1} 段結束">
+        <button class="btn sm ghost icon-txt" type="button" data-sl="rg-del" data-d="${d}" data-i="${i}" aria-label="刪除週${WD_[d]}這一段" title="刪除這一段">⊘</button>
+      </div>`).join('') : '<p class="sw-off">不開放預約</p>';
+    const copy = SL.copyFrom === d ? `<div class="sw-copy" role="group" aria-label="把週${WD_[d]}的時間複製到">
+        <span>複製到：</span>${[0, 1, 2, 3, 4, 5, 6].filter(x => x !== d).map(x => `<label><input type="checkbox" class="sw-cp" value="${x}">週${WD_[x]}</label>`).join('')}
+        <button class="btn sm primary" type="button" data-sl="cp-yes" data-d="${d}">套用</button><button class="btn sm ghost" type="button" data-sl="cp-no">取消</button></div>` : '';
+    return `<div class="sw-day"><span class="sw-dn">週${WD_[d]}</span><div class="sw-rgs">${ranges}${copy}</div>
+      <span class="sw-acts"><button class="btn sm ghost" type="button" data-sl="rg-add" data-d="${d}" aria-label="週${WD_[d]}加一段時間" title="加一段時間">＋</button>${rs.length ? `<button class="btn sm ghost" type="button" data-sl="cp" data-d="${d}" aria-label="把週${WD_[d]}的時間複製到其他天" title="複製到其他天">複製</button>` : ''}</span></div>`;
+  }).join('');
+  const bad = [0, 1, 2, 3, 4, 5, 6].some(d => w.days[d].some(r => !(slHm(r[0]) >= 0 && slHm(r[1]) > slHm(r[0]))));
+  return `<section class="sw" aria-labelledby="sw-h">
+    <div class="sw-head"><h3 id="sw-h">每週可預約時間</h3>
+      <label class="sw-on"><input type="checkbox" id="sw-on"${w.on ? ' checked' : ''}> 開放每週預約</label></div>
+    <p class="note lead">像 Google 日曆的預約時間表：設定每週固定可以面試的時間，系統自動切成一個個時段讓應徵者選。某一天不行，就在下面的時段清單按「關閉」。</p>
+    <div class="sw-opts">
+      <div class="f"><label for="sw-dur">預約時間長度</label><select class="inp" id="sw-dur">${opt(SL_DURS, w.dur, x => x + ' 分鐘')}</select></div>
+      <div class="f"><label for="sw-cap">每個時段幾人</label><input id="sw-cap" type="number" min="1" max="20" value="${esc(String(w.cap))}"></div>
+      <div class="f"><label for="sw-ahead">開放預約</label><select class="inp" id="sw-ahead">${opt(SL_AHEAD.includes(w.ahead) ? SL_AHEAD : [...SL_AHEAD, w.ahead].sort((a, b) => a - b), w.ahead, x => `未來 ${x} 天`)}</select></div>
+      <div class="f"><label for="sw-notice">最晚預約</label><select class="inp" id="sw-notice">${opt(SL_NOTICE.includes(w.notice) ? SL_NOTICE : [...SL_NOTICE, w.notice].sort((a, b) => a - b), w.notice, x => x ? `面試前 ${x} 小時` : '開始前都可以')}</select></div>
+    </div>
+    <div class="sw-days">${rows}</div>
+    <div class="sw-foot">
+      <span class="sw-sum" id="sw-sum">${bad ? '<span class="ob-err">有時間段的結束早於開始，請修正。</span>' : w.on ? `依這個設定，未來 ${w.ahead} 天共 ${slWeekCount(w)} 個時段。` : '目前不開放每週預約（只有另外加開的單次時段）。'}${SL.dirty ? '<b>（還沒儲存）</b>' : ''}</span>
+      ${SL.dirty ? '<button class="btn sm ghost" type="button" data-sl="wk-reset">還原</button>' : ''}
+      <button class="btn sm primary" type="button" data-sl="wk-save"${SL.dirty && !bad ? '' : ' disabled'}>儲存每週時間</button>
+    </div>
+  </section>`;
+}
 function renderSlots(){
-  if ($('#slm').hidden && !SL.rendering) { /* 視窗沒開就不畫 */ }
   const root = $('#sl-body'), t = today();
-  const keep = {}; root.querySelectorAll('input').forEach(i => { if (i.id) keep[i.id] = i.value; });
-  const all = slotList(), books = slotBookings();
-  const upcoming = all.filter(s => s.date >= t), pastN = all.length - upcoming.length;
+  if (!SL.wk) SL.wk = JSON.parse(JSON.stringify(slWeekStored() || slEmptyWeek()));
+  if (!SL.dirty) { const st = slWeekStored(); if (st) SL.wk = JSON.parse(JSON.stringify(st)); }   // 別人改了、自己沒在改 → 跟著更新
+  const keep = {}; root.querySelectorAll('.sl-add input').forEach(i => { if (i.id) keep[i.id] = i.value; });
+  const cut = slCut(slWeekStored()), books = slotBookings();
+  const all = slotList(), have = new Set(all.map(s => s.id));
+  // 有人預約、但已經不在規則裡的時段（例如改了每週時間），照樣列出來
+  for (const [id, hs] of books) if (!have.has(id)) { const h = hs[0]; if (isDate(h.interviewDate) && h.interviewDate >= t) all.push({id, date:h.interviewDate, time:h.interviewTime || '', cap:hs.length, closed:false, orphan:true}); }
+  all.sort((a, b) => (a.date + a.time) < (b.date + b.time) ? -1 : 1);
+  const upcoming = all.filter(s => s.date >= t);
   const byDay = new Map();
   upcoming.forEach(s => { if (!byDay.has(s.date)) byDay.set(s.date, []); byDay.get(s.date).push(s); });
-  const days = [...byDay.entries()].map(([d, list]) => `<section class="sl-day"><h3>${dayLabel(d)}</h3>${list.map(s => {
-    const who = books.get(s.id) || [], full = who.length >= s.cap, sid = esc(s.id);
-    const acts = SL.confirm === s.id
-      ? `<button class="btn sm danger-solid" type="button" data-sl="del-yes" data-id="${sid}">確定刪除</button><button class="btn sm ghost" type="button" data-sl="cancel">取消</button>`
-      : `<button class="btn sm ghost" type="button" data-sl="toggle" data-id="${sid}">${s.closed ? '重新開放' : '關閉'}</button>${who.length ? '' : `<button class="btn sm ghost danger" type="button" data-sl="del" data-id="${sid}">刪除</button>`}`;
-    return `<div class="sl-row${s.closed ? ' closed' : ''}"><span class="sl-time">${esc(s.time)}</span>
-      <span class="sl-cnt">${s.closed ? '已關閉' : full ? `<b>額滿</b> ${who.length}/${s.cap}` : `${who.length}/${s.cap} 人`}</span>
-      <span class="sl-who">${who.map(h => `<button class="link" type="button" data-sl="open" data-id="${esc(h.id)}">${esc(nm(h))}</button>`).join('') || '<span class="muted">還沒有人預約</span>'}</span>
-      <span class="sl-acts">${acts}</span></div>`;
-  }).join('')}</section>`).join('');
+  const days = [...byDay.entries()].map(([d, list]) => {
+    const anyOpen = list.some(s => !s.closed && !s.orphan);
+    return `<section class="sl-day"><h3>${dayLabel(d)}<button class="btn sm ghost" type="button" data-sl="${anyOpen ? 'day-close' : 'day-open'}" data-date="${esc(d)}">${anyOpen ? '關閉這一天' : '重新開放這一天'}</button></h3>${list.map(s => {
+      const who = books.get(s.id) || [], full = who.length >= s.cap, sid = esc(s.id), late = (s.date + 'T' + s.time) <= cut;
+      const acts = s.orphan ? '' : SL.confirm === s.id
+        ? `<button class="btn sm danger-solid" type="button" data-sl="del-yes" data-id="${sid}">確定刪除</button><button class="btn sm ghost" type="button" data-sl="cancel">取消</button>`
+        : `<button class="btn sm ghost" type="button" data-sl="toggle" data-id="${sid}">${s.closed ? '重新開放' : '關閉'}</button>${who.length || s.gen || s.ovr ? '' : `<button class="btn sm ghost danger" type="button" data-sl="del" data-id="${sid}">刪除</button>`}`;
+      const cnt = s.orphan ? '已不在每週時間內' : s.closed ? '已關閉' : full ? `<b>額滿</b> ${who.length}/${s.cap}` : late ? `${who.length}/${s.cap}・已截止預約` : `${who.length}/${s.cap} 人`;
+      return `<div class="sl-row${s.closed ? ' closed' : ''}"><span class="sl-time">${esc(s.time)}</span>
+        <span class="sl-cnt">${cnt}${s.rec && !s.ovr ? '<span class="sl-tag">單次</span>' : ''}</span>
+        <span class="sl-who">${who.map(h => `<button class="link" type="button" data-sl="open" data-id="${esc(h.id)}">${esc(nm(h))}</button>`).join('') || '<span class="muted">還沒有人預約</span>'}</span>
+        <span class="sl-acts">${acts}</span></div>`;
+    }).join('')}</section>`;
+  }).join('');
   root.innerHTML = `
     <div class="f"><span class="lbl">應徵連結（傳給應徵者，不用登入）</span>
       <div class="sl-link"><input id="sl-url" readonly value="${esc(APPLY_URL)}" aria-label="應徵連結"><button class="btn sm" type="button" data-sl="copy">複製</button><a class="btn sm" href="${esc(APPLY_URL)}" target="_blank" rel="noopener">開啟</a></div>
-      <p class="note top" style="margin-top:6px">應徵者打開連結，先選一個還有空位的時段，再填人事資料表；送出後直接出現在「招募」頁的「面試」，面試日期和時間都會帶入。用 LINE 傳時在網址後面加 <code>?openExternalBrowser=1</code>。</p></div>
-    <form class="sl-add" id="sl-form" novalidate>
-      <div class="f"><label for="sl-date">日期</label><input id="sl-date" type="date" value="${esc(keep['sl-date'] || '')}"></div>
-      <div class="f"><label for="sl-times">時間（可以一次填多個，用空白或逗號分開）</label><input id="sl-times" placeholder="例如 10:00 10:30 14:00" value="${esc(keep['sl-times'] || '')}"></div>
-      <div class="f"><label for="sl-cap">每個時段幾人</label><input id="sl-cap" type="number" min="1" max="20" value="${esc(keep['sl-cap'] || '1')}"></div>
-      <button class="btn primary" type="submit">新增時段</button>
-    </form>
+      <p class="note lead" style="margin-top:6px">應徵者打開連結，先選一個還有空位的時段，再填人事資料表；送出後直接出現在「招募」頁的「面試」，面試日期和時間都會帶入。用 LINE 傳時在網址後面加 <code>?openExternalBrowser=1</code>。</p></div>
+    ${slWeekHTML()}
+    <details class="sl-more"${keep['sl-date'] || keep['sl-times'] ? ' open' : ''}><summary>另外加開單次時段</summary>
+      <form class="sl-add" id="sl-form" novalidate>
+        <div class="f"><label for="sl-date">日期</label><input id="sl-date" type="date" value="${esc(keep['sl-date'] || '')}"></div>
+        <div class="f"><label for="sl-times">時間（可以一次填多個，用空白或逗號分開）</label><input id="sl-times" placeholder="例如 10:00 10:30 14:00" value="${esc(keep['sl-times'] || '')}"></div>
+        <div class="f"><label for="sl-cap">每個時段幾人</label><input id="sl-cap" type="number" min="1" max="20" value="${esc(keep['sl-cap'] || '1')}"></div>
+        <button class="btn primary" type="submit">新增時段</button>
+      </form>
+    </details>
     <p class="imp-msg${SL.msgErr ? ' err' : ''}" id="sl-msg" role="status">${esc(SL.msg)}</p>
-    ${days || '<p class="rt-empty">還沒有今天以後的面試時段。先選日期、填時間，按「新增時段」。</p>'}
-    ${pastN ? `<p class="muted">另有 ${pastN} 個過去的時段（不再顯示，也不能預約）。</p>` : ''}`;
+    <h3 class="sl-list-h">接下來的時段</h3>
+    ${days || '<p class="rt-empty">還沒有今天以後的面試時段。設定上面的「每週可預約時間」後按「儲存每週時間」，或另外加開單次時段。</p>'}`;
+}
+/** 編輯中的每週設定：讀畫面上的欄位（不重畫，免得游標跳走） */
+function slReadWeek(){
+  const w = SL.wk;
+  w.on = $('#sw-on').checked;
+  w.dur = Number($('#sw-dur').value) || 30;
+  w.cap = slNum($('#sw-cap').value, 1, 20, 1);
+  w.ahead = Number($('#sw-ahead').value) || 14;
+  w.notice = Number($('#sw-notice').value) || 0;
+  document.querySelectorAll('#sl-body .sw-t').forEach(i => { const r = w.days[i.dataset.d][i.dataset.i]; if (r) r[+i.dataset.k] = i.value; });
+}
+function slWeekEdited(full){
+  slReadWeek(); SL.dirty = true;
+  if (full) renderSlots();
+  else { const tmp = document.createElement('div'); tmp.innerHTML = slWeekHTML(); $('#sw-sum').parentElement.replaceWith(tmp.querySelector('.sw-foot')); }
+}
+function slSaveWeek(){
+  slReadWeek();
+  const w = SL.wk, days = {};
+  for (let d = 0; d < 7; d++) {
+    days[d] = w.days[d].filter(r => r[0] || r[1]);
+    if (days[d].some(r => !(slHm(r[0]) >= 0 && slHm(r[1]) > slHm(r[0])))) { SL.msg = `週${WD_[d]}有一段時間的結束早於開始（或沒填完整），請修正。`; SL.msgErr = true; renderSlots(); return; }
+    days[d].sort((a, b) => slHm(a[0]) - slHm(b[0]));
+  }
+  ST.save('slots', {id:'_week', on:w.on, dur:w.dur, cap:w.cap, ahead:w.ahead, notice:w.notice, days, updatedAt:Date.now(), updatedBy:myName()});
+  SL.wk = JSON.parse(JSON.stringify(slWeekNorm(ST.get('slots', '_week'))));
+  SL.dirty = false; SL.copyFrom = null;
+  SL.msg = w.on ? `已儲存每週時間，未來 ${w.ahead} 天共 ${slWeekCount(SL.wk)} 個時段，應徵連結上馬上看得到。` : '已儲存：不開放每週預約。'; SL.msgErr = false;
+  renderSlots();
+}
+/** 關閉／重新開放一個時段：產生的時段用一筆同 id 的紀錄蓋過去，重新開放就刪掉那筆 */
+function slToggle(s, close){
+  const cur = ST.get('slots', s.id);
+  if (s.gen && close) ST.save('slots', {id:s.id, date:s.date, time:s.time, cap:s.cap, closed:true, gen:true, createdAt:Date.now(), createdBy:myName()});
+  else if (s.ovr && !close) ST.remove('slots', s.id);
+  else if (cur) ST.save('slots', Object.assign(JSON.parse(JSON.stringify(cur)), {closed:close}));
 }
 function addSlots(){
   const date = $('#sl-date').value, cap = Math.min(20, Math.max(1, parseInt($('#sl-cap').value, 10) || 1));
@@ -1004,7 +1146,7 @@ function addSlots(){
   if (!isDate(date)) return fail('請選日期。');
   if (date < today()) return fail('不能新增過去的日期。');
   if (!times.length) return fail('請填時間，例如 10:00 14:30。');
-  const have = new Set(slotList().filter(s => s.date === date).map(s => s.time));
+  const have = new Set(slotList().filter(s => s.date === date && !s.gen).map(s => s.time));
   const fresh = times.filter(x => !have.has(x)), now = Date.now(), by = myName();
   if (fresh.length) ST.saveMany('slots', fresh.map(time => ({id:rid('s'), date, time, cap, closed:false, createdAt:now, createdBy:by})));
   $('#sl-times').value = '';
@@ -2116,7 +2258,7 @@ function render(){
   else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed, .tpl-ed, .ob-cfg, #at-text'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
-  if (!$('#slm').hidden) renderSlots();
+  if (!$('#slm').hidden && !(document.activeElement && document.activeElement.closest && document.activeElement.closest('#sl-body input, #sl-body select'))) renderSlots();   // 正在填時段時不重畫
 }
 function viewFromHash(){ const h = location.hash.slice(1); return VIEWS.includes(h) && (h !== 'users' || isAdmin()) ? h : 'overview'; }
 function setView(v){
@@ -2451,14 +2593,38 @@ $('#slot-btn').addEventListener('click', openSlots);
 $('#slm').addEventListener('click', e => {
   if (e.target.closest('[data-sl-close]')) { closeSlots(); return; }
   const b = e.target.closest('[data-sl]'); if (!b) return;
-  const id = b.dataset.id, cur = id ? ST.get('slots', id) : null;
+  const id = b.dataset.id, cur = id ? ST.get('slots', id) : null, d = b.dataset.d;
   switch (b.dataset.sl) {
+    case 'rg-add': {
+      slReadWeek();
+      const rs = SL.wk.days[d], last = rs.length ? slHm(rs[rs.length - 1][1]) : -1;
+      if (last < 0) rs.push(['09:00', '17:00']);
+      else if (last + SL.wk.dur < 24 * 60) rs.push([slFmt(last), slFmt(last + SL.wk.dur)]);
+      SL.dirty = true; renderSlots(); break;
+    }
+    case 'rg-del': slReadWeek(); SL.wk.days[d].splice(+b.dataset.i, 1); SL.dirty = true; renderSlots(); break;
+    case 'cp': slReadWeek(); SL.copyFrom = +d; renderSlots(); break;
+    case 'cp-yes': {
+      slReadWeek();
+      const to = [...document.querySelectorAll('#sl-body .sw-cp:checked')].map(x => x.value);
+      to.forEach(x => { SL.wk.days[x] = JSON.parse(JSON.stringify(SL.wk.days[d])); });
+      SL.copyFrom = null; if (to.length) SL.dirty = true; renderSlots(); break;
+    }
+    case 'cp-no': slReadWeek(); SL.copyFrom = null; renderSlots(); break;
+    case 'wk-save': slSaveWeek(); break;
+    case 'wk-reset': SL.dirty = false; SL.copyFrom = null; SL.wk = JSON.parse(JSON.stringify(slWeekStored() || slEmptyWeek())); SL.msg = ''; renderSlots(); break;
+    case 'day-close': case 'day-open': {
+      const close = b.dataset.sl === 'day-close';
+      slotList().filter(s => s.date === b.dataset.date && s.closed !== close).forEach(s => slToggle(s, close));
+      SL.msg = `${dayLabel(b.dataset.date)} ${close ? '已關閉，應徵者不能選這一天' : '已重新開放'}。`; SL.msgErr = false;
+      renderSlots(); break;
+    }
     case 'copy': {
       const inp = $('#sl-url');
       Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(inp.value)).then(() => toast('已複製應徵連結')).catch(() => { inp.select(); toast('請按 Ctrl+C 複製'); });
       break;
     }
-    case 'toggle': if (cur) { ST.save('slots', Object.assign(JSON.parse(JSON.stringify(cur)), {closed:!cur.closed})); renderSlots(); } break;
+    case 'toggle': { const s = slotList().find(x => x.id === id); if (s) { slToggle(s, !s.closed); renderSlots(); } break; }
     case 'del': SL.confirm = id; renderSlots(); break;
     case 'del-yes': if (cur) ST.remove('slots', id); SL.confirm = null; renderSlots(); break;
     case 'cancel': SL.confirm = null; renderSlots(); break;
@@ -2466,6 +2632,7 @@ $('#slm').addEventListener('click', e => {
   }
 });
 $('#slm').addEventListener('submit', e => { if (e.target.id === 'sl-form') { e.preventDefault(); addSlots(); } });
+$('#slm').addEventListener('change', e => { if (e.target.closest('.sw') && !e.target.classList.contains('sw-cp')) slWeekEdited(false); });
 $('#imp-close').addEventListener('click', closeImport);
 $('#imp-cancel').addEventListener('click', closeImport);
 $('#imp').addEventListener('click', e => { if (e.target.closest('[data-imp-close]')) closeImport(); });
