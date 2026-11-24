@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>人事工作看板</title>
+<meta name="description" content="起士公爵人事工作：面試資料與評語、錄取證件、APOLLO、勞健保加保，以及每日、每週、每月例行工作">
+<meta name="theme-color" content="#0F3F25">
+<meta name="application-name" content="人事看板">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="人事看板">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
+<link rel="stylesheet" href="css/app.css">
+<script src="config.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/cloud-store.js"></script>
+<script src="js/app.js" defer></script>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="top">
+    <div class="wrap top-in">
+      <div class="brand">
+        <img class="mark" src="icons/icon.svg" alt="" width="34" height="34">
+        <div class="brand-t"><b>人事工作看板</b><button type="button" id="sync" class="sync" title="立即同步"><i aria-hidden="true"></i><span>連線中…</span></button></div>
+      </div>
+      <nav class="views" id="views" aria-label="主要頁面"></nav>
+    </div>
+  </header>
+
+  <main class="wrap" id="main">
+    <div class="banner" id="banner" role="status" hidden></div>
+
+    <div id="overview-view" hidden></div>
+
+    <div id="pipeline-view" hidden>
+      <div class="toolbar">
+        <div class="month" role="group" aria-label="統計月份">
+          <button class="btn icon" id="m-prev" type="button" aria-label="上個月">‹</button>
+          <span class="m-label" id="m-label"></span>
+          <button class="btn icon" id="m-next" type="button" aria-label="下個月">›</button>
+        </div>
+        <input class="inp" type="search" id="q" placeholder="搜尋姓名、職位、部門" aria-label="搜尋">
+        <span class="sp"></span>
+        <button class="btn" id="imp-btn" type="button">匯入表單回覆</button>
+        <button class="btn primary" id="add-btn" type="button">＋ 新增面試者</button>
+      </div>
+      <section class="stats" id="stats" aria-label="本月統計"></section>
+      <nav class="tabs" id="tabs" role="tablist" aria-label="步驟"></nav>
+      <div class="board-scroll"><div class="board" id="board"></div></div>
+      <p class="foot-note">勞保、就保須於員工到職當日申報加保（勞工保險條例第 11 條）；健保應於到職 3 日內申報。卡片上的到職日標示會依此提醒。</p>
+    </div>
+
+    <div id="routine-view" hidden></div>
+    <div id="users-view" hidden></div>
+  </main>
+  <footer class="wrap foot" id="foot"></footer>
+</div>
+
+<div class="drawer" id="drawer" hidden>
+  <div class="scrim" data-close="1"></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="d-title">
+    <div class="p-head">
+      <div class="p-title"><h2 id="d-title"></h2><span class="pill" id="d-pill"></span></div>
+      <button class="btn icon" id="d-close" type="button" aria-label="關閉">✕</button>
+    </div>
+    <div class="p-body">
+      <div id="d-form"></div>
+      <div id="d-dyn"></div>
+      <form class="sec" id="info-form" novalidate>
+        <h3>基本資料</h3>
+        <div class="grid2">
+          <div class="f"><label for="f-name">姓名（必填）</label><input id="f-name" autocomplete="off" maxlength="40"></div>
+          <div class="f"><label for="f-position">應徵職位</label><input id="f-position" autocomplete="off" maxlength="60"></div>
+          <div class="f"><label for="f-dept">部門</label><input id="f-dept" autocomplete="off" maxlength="60"></div>
+          <div class="f"><label for="f-phone">聯絡電話</label><input id="f-phone" type="tel" autocomplete="off" maxlength="30"></div>
+          <div class="f"><label for="f-interview">面試日期</label><input id="f-interview" type="date"></div>
+          <div class="f"><label for="f-start">預計到職日</label><input id="f-start" type="date"></div>
+          <div class="f full"><label for="f-note">備註</label><textarea id="f-note" rows="2" maxlength="1000"></textarea></div>
+        </div>
+        <div class="form-foot"><span class="save-state" id="save-state" aria-live="polite"></span><button class="btn primary" id="f-submit" type="submit">儲存</button></div>
+      </form>
+      <form class="sec" id="iv-form" novalidate hidden>
+        <h3>面試紀錄 <span class="h-count" id="iv-meta"></span></h3>
+        <div class="grid2">
+          <div class="f"><label for="iv-interviewer">面試官</label><input id="iv-interviewer" autocomplete="off" maxlength="40"></div>
+          <div class="f full"><span class="lbl" id="iv-rating-l">綜合評分</span>
+            <div class="rating" role="radiogroup" aria-labelledby="iv-rating-l">
+              <input type="radio" name="iv-rating" id="iv-r-a" value="A"><label for="iv-r-a">優秀</label>
+              <input type="radio" name="iv-rating" id="iv-r-b" value="B"><label for="iv-r-b">良好</label>
+              <input type="radio" name="iv-rating" id="iv-r-c" value="C"><label for="iv-r-c">尚可</label>
+              <input type="radio" name="iv-rating" id="iv-r-d" value="D"><label for="iv-r-d">不適合</label>
+            </div>
+          </div>
+          <div class="f full"><label for="iv-comment">面試評語</label><textarea id="iv-comment" rows="6" maxlength="4000" placeholder="工作經歷、專業能力、態度、可到職日、薪資期望…"></textarea></div>
+        </div>
+        <div class="form-foot"><span class="save-state" id="iv-state" aria-live="polite"></span><button class="btn primary" id="iv-submit" type="submit">儲存評語</button></div>
+      </form>
+      <div id="d-foot"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="imp" hidden>
+  <div class="scrim" data-imp-close="1"></div>
+  <div class="m-panel" role="dialog" aria-modal="true" aria-labelledby="imp-title">
+    <div class="p-head">
+      <div class="p-title"><h2 id="imp-title">匯入人事資料表回覆</h2></div>
+      <button class="btn icon" id="imp-close" type="button" aria-label="關閉">✕</button>
+    </div>
+    <div class="m-body">
+      <ol class="imp-steps">
+        <li>打開「起士公爵人事資料表」的回覆試算表（表單 → 回覆 → 在試算表中查看）。</li>
+        <li>點試算表左上角全選、複製（Ctrl+C），貼到下面的框；也可以選擇下載的 CSV 檔，或表單「下載回覆」得到的 ZIP 檔。</li>
+        <li>勾選要匯入的人，按「匯入」。已經在看板上的人會自動略過，可以重複匯入。</li>
+      </ol>
+      <div class="f"><label for="imp-paste">貼上回覆資料（包含第一列標題）</label><textarea id="imp-paste" rows="4" placeholder="在這裡貼上"></textarea></div>
+      <div class="imp-row"><button class="btn sm" type="button" id="imp-file-btn">選擇 CSV／ZIP 檔</button><span class="muted" id="imp-file-name"></span></div>
+      <p class="imp-msg" id="imp-msg" role="status"></p>
+      <div id="imp-preview"></div>
+    </div>
+    <div class="m-foot"><button class="btn ghost" type="button" id="imp-cancel">取消</button><button class="btn primary" type="button" id="imp-go" disabled>匯入</button></div>
+  </div>
+</div>
+
+<div class="modal" id="umodal" hidden>
+  <div class="scrim" data-u-close="1"></div>
+  <div class="m-panel narrow" role="dialog" aria-modal="true" aria-labelledby="u-title">
+    <form id="u-form" novalidate>
+      <div class="p-head">
+        <div class="p-title"><h2 id="u-title">新增人員</h2></div>
+        <button class="btn icon" type="button" data-u-close="1" aria-label="關閉">✕</button>
+      </div>
+      <div class="m-body">
+        <div class="f"><label for="u-email">Gmail（必填）</label><input id="u-email" type="email" autocomplete="off" placeholder="name@gmail.com" maxlength="120"></div>
+        <div class="f"><label for="u-name">姓名（顯示在更新紀錄）</label><input id="u-name" autocomplete="off" maxlength="30" placeholder="例如：王小明"></div>
+        <div class="perm-list" id="u-perms"></div>
+        <p class="note">都不勾＝只能查看（例行工作仍然可以打勾）。</p>
+        <p class="imp-msg err" id="u-err" role="alert"></p>
+      </div>
+      <div class="m-foot"><button class="btn ghost" type="button" data-u-close="1">取消</button><button class="btn primary" type="submit" id="u-save">儲存</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lb-close" type="button" aria-label="關閉">✕</button>
+  <img id="lb-img" alt="">
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<input class="vh" type="file" id="file-cam" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input class="vh" type="file" id="file-pick" accept="image/*,application/pdf" multiple tabindex="-1" aria-hidden="true">
+<input class="vh" type="file" id="imp-file" accept=".csv,.tsv,.txt,.zip,text/csv,application/zip" tabindex="-1" aria-hidden="true">
+</body>
+</html>
