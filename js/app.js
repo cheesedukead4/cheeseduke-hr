@@ -126,7 +126,8 @@ const S = {
   hires:new Map(), routines:new Map(), checks:{daily:{done:{}}, weekly:{done:{}}, monthly:{done:{}}}, loaded:false,
   month:curMonth(), q:'', tab:'interview', rejOpen:false, view:'overview',
   openId:null, creating:false, confirm:null, uploading:{}, pendingSlot:null, showId:false,
-  rtEdit:{}, rtConfirm:null, imp:null
+  rtEdit:{}, rtConfirm:null, imp:null,
+  batch:false, sel:new Set(), batchConfirm:false, batchDate:''
 };
 const U = {list:null, admins:[], loading:false, error:'', confirm:null, editing:null};
 const inMonth = s => !!s && s.slice(0,7) === S.month;
@@ -374,6 +375,11 @@ function renderToolbar(){
   $('#m-label').textContent = `${y} 年 ${+m} 月`;
   $('#m-next').disabled = S.month >= curMonth();
   $('#imp-btn').hidden = !canEdit();
+  const bb = $('#batch-btn');
+  bb.hidden = !canEdit();
+  bb.classList.toggle('on', S.batch);
+  bb.setAttribute('aria-pressed', String(S.batch));
+  bb.textContent = S.batch ? '結束批次整理' : '批次整理';
   $('#add-btn').hidden = !canEdit();
 }
 function renderStats(){
@@ -435,11 +441,13 @@ function cardHTML(h){
     }
   }
   const role = [h.position, h.dept].filter(Boolean).join('・');
-  return `<article class="card${h.stage === 'done' ? ' is-done' : ''}">
+  const batch = S.batch, picked = batch && S.sel.has(h.id);
+  return `<article class="card${h.stage === 'done' ? ' is-done' : ''}${batch ? ' is-batch' : ''}${picked ? ' picked' : ''}">
+    ${batch ? `<label class="pick"><input type="checkbox" data-pick="${id}"${picked ? ' checked' : ''} aria-label="選取 ${esc(nm(h))}"></label>` : ''}
     ${h.stage === 'done' ? '<span class="stamp" aria-hidden="true">已加保</span>' : ''}
     <button class="card-open" type="button" data-act="open" data-id="${id}"><span class="c-name">${esc(nm(h))}</span>${role ? `<span class="c-role">${esc(role)}</span>` : ''}</button>
     ${chips.length ? `<div class="chips">${chips.join('')}</div>` : ''}
-    ${acts.length ? `<div class="c-act">${acts.join('')}</div>` : ''}
+    ${acts.length && !batch ? `<div class="c-act">${acts.join('')}</div>` : ''}
   </article>`;
 }
 function renderBoard(){
@@ -453,18 +461,97 @@ function renderBoard(){
     let extra = '';
     if (st.key === 'interview' && S.loaded) {
       const rej = rejectedItems();
-      if (rej.length) extra = `<details class="rej"${S.rejOpen ? ' open' : ''}><summary>未錄取・${mNum} 月 ${rej.length} 位</summary><ul>${rej.map(h =>
-        `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc(h.position)}</span></li>`).join('')}</ul></details>`;
+      if (rej.length) extra = `<details class="rej"${S.rejOpen || S.batch ? ' open' : ''}><summary>未錄取・${mNum} 月 ${rej.length} 位</summary><ul>${rej.map(h =>
+        S.batch
+          ? `<li><label><input type="checkbox" class="pick-r" data-pick="${esc(h.id)}"${S.sel.has(h.id) ? ' checked' : ''}><span class="link">${esc(nm(h))}</span></label><span>${esc(h.position)}</span></li>`
+          : `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc(h.position)}</span></li>`).join('')}</ul></details>`;
     }
     const hint = st.key === 'done' ? `${mNum} 月完成加保` : st.hint;
+    const allPicked = items.length && items.every(h => S.sel.has(h.id));
+    const colPick = S.batch && items.length ? `<button class="col-pick" type="button" data-pick-col="${st.key}">${allPicked ? '取消全選' : '全選'}</button>` : '';
     return `<section class="col${S.tab === st.key ? ' is-tab' : ''}" aria-labelledby="col-${st.key}">
-      <header class="col-h">${st.n ? `<span class="col-n">${st.n}</span>` : '<span class="col-n fin">✓</span>'}<h2 class="col-t" id="col-${st.key}">${st.title}</h2><span class="col-c">${S.loaded ? items.length : ''}</span></header>
+      <header class="col-h">${st.n ? `<span class="col-n">${st.n}</span>` : '<span class="col-n fin">✓</span>'}<h2 class="col-t" id="col-${st.key}">${st.title}</h2><span class="col-c">${S.loaded ? items.length : ''}</span>${colPick}</header>
       <p class="col-hint">${esc(hint)}</p>
       <div class="col-body">${body}${extra}</div>
     </section>`;
   }).join('');
   const det = $('#board details.rej');
   if (det) det.addEventListener('toggle', () => { S.rejOpen = det.open; });
+}
+
+/* ================= 批次整理（勾選多人一次錄取、未錄取、刪除） ================= */
+const defaultBatchDate = () => ymd(new Date(Date.now() - 30 * 86400000));
+function setBatch(on){
+  S.batch = !!on && canEdit(); S.sel.clear(); S.batchConfirm = false;
+  render();
+}
+function togglePick(id, on){
+  if (on === undefined) on = !S.sel.has(id);
+  if (on) S.sel.add(id); else S.sel.delete(id);
+  S.batchConfirm = false;
+  renderBoard(); renderBatchBar();
+}
+function togglePickCol(key){
+  const items = columnItems(key), all = items.length && items.every(h => S.sel.has(h.id));
+  items.forEach(h => { if (all) S.sel.delete(h.id); else S.sel.add(h.id); });
+  S.batchConfirm = false;
+  renderBoard(); renderBatchBar();
+}
+function pickBefore(date){
+  if (!isDate(date)) { toast('請先選日期'); return; }
+  const list = [...S.hires.values()].filter(visible).filter(h => h.stage === 'interview' && ivDay(h) && ivDay(h) <= date);
+  list.forEach(h => S.sel.add(h.id));
+  S.batchConfirm = false;
+  renderBoard(); renderBatchBar();
+  toast(list.length ? `選取了 ${list.length} 位 ${md(date)} 前（含當天）填表的面試者` : `沒有 ${md(date)} 前填表、還在面試資料的人`);
+}
+function batchPhotoCount(){ let n = 0; S.sel.forEach(id => { const h = S.hires.get(id); if (h) n += Object.keys(h.docs).length; }); return n; }
+function renderBatchBar(){
+  const bar = $('#batch-bar'), pv = $('#pipeline-view');
+  if (!S.batch || S.view !== 'pipeline') { bar.hidden = true; pv.classList.remove('batching'); return; }
+  for (const id of [...S.sel]) if (!S.hires.has(id)) S.sel.delete(id);
+  const n = S.sel.size, dis = n ? '' : ' disabled', photos = batchPhotoCount();
+  bar.hidden = false; pv.classList.add('batching');
+  bar.innerHTML = `<div class="batch-in">
+    <span class="batch-n">已選 <b>${n}</b> 人</span>
+    ${S.batchConfirm
+      ? `<span class="batch-confirm">確定刪除這 ${n} 人的所有資料？${photos ? `${photos} 份證件照片會一併刪除（雲端硬碟垃圾桶保留 30 天）。` : ''}刪除後不會再被表單自動匯入加回來。</span><button class="btn sm danger-solid" type="button" data-b="del-yes">確定刪除</button><button class="btn sm ghost" type="button" data-b="del-no">取消</button>`
+      : `<button class="btn sm primary" type="button" data-b="hire"${dis}>錄取</button><button class="btn sm" type="button" data-b="reject"${dis}>未錄取</button><button class="btn sm ghost danger" type="button" data-b="del"${dis}>刪除</button><button class="btn sm ghost" type="button" data-b="clear"${dis}>清除選取</button>`}
+    <span class="batch-date"><label for="batch-date">選取</label><input type="date" id="batch-date" value="${esc(S.batchDate || defaultBatchDate())}"><span>前（含當天）填表、還在「面試資料」的人</span><button class="btn sm" type="button" data-b="pick-date">選取</button></span>
+    <span class="sp"></span><button class="btn sm" type="button" data-b="done">結束批次整理</button>
+  </div>`;
+}
+function batchStage(hired){
+  if (!canEdit()) return;
+  const recs = [], before = []; let skipped = 0;
+  const now = Date.now(), by = myName();
+  S.sel.forEach(id => {
+    const h = S.hires.get(id), cur = ST.get('hires', id);
+    if (!h || !cur) return;
+    if (h.stage !== 'interview') { if (!(h.stage === 'rejected' && !hired)) skipped++; return; }
+    before.push(JSON.parse(JSON.stringify(cur)));
+    const r = JSON.parse(JSON.stringify(cur));
+    r.stage = hired ? 'docs' : 'rejected'; r.result = hired ? 'hired' : 'rejected';
+    r.steps = obj(r.steps); r.steps.interview = {at:now, by};
+    r.updatedAt = now; r.updatedBy = by;
+    recs.push(r);
+  });
+  if (recs.length) ST.saveMany('hires', recs);
+  S.sel.clear(); S.batchConfirm = false;
+  const skip = skipped ? `（${skipped} 人不在「面試資料」這一步，沒有改）` : '';
+  toast(recs.length ? `${recs.length} 人${hired ? '已錄取，移到「錄取・證件」' : '已標記為未錄取'}${skip}` : `沒有可以改的人${skip}`, recs.length ? () => ST.saveMany('hires', before) : null);
+  render();
+}
+function batchDelete(){
+  if (!canEdit()) return;
+  const ids = [...S.sel].filter(id => S.hires.has(id));
+  const files = [], before = [];
+  ids.forEach(id => { Object.values(S.hires.get(id).docs).forEach(d => files.push(d.id)); const cur = ST.get('hires', id); if (cur) before.push(JSON.parse(JSON.stringify(cur))); });
+  ST.removeMany('hires', ids);
+  files.forEach(fid => AU.api('photoDel', {id:fid}).catch(() => {}));
+  S.sel.clear(); S.batchConfirm = false;
+  toast(`已刪除 ${ids.length} 人的資料`, files.length ? null : () => ST.saveMany('hires', before));
+  render();
 }
 
 /* ================= 總覽 ================= */
@@ -1154,7 +1241,7 @@ function render(){
   showView();
   renderViews(); renderBanner(); renderFoot(); renderSync();
   if (S.view === 'overview') renderOverview();
-  else if (S.view === 'pipeline') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); }
+  else if (S.view === 'pipeline') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'users') renderUsers();
   if (S.openId && !S.creating) refreshDrawer();
@@ -1185,7 +1272,33 @@ function shiftMonth(delta){
 $('#q').addEventListener('input', e => { S.q = e.target.value.trim(); renderTabs(); renderBoard(); });
 $('#add-btn').addEventListener('click', openCreate);
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; S.tab = b.dataset.tab; renderTabs(); renderBoard(); });
+$('#batch-btn').addEventListener('click', () => setBatch(!S.batch));
+$('#batch-bar').addEventListener('change', e => { if (e.target.id === 'batch-date') S.batchDate = e.target.value; });
+$('#batch-bar').addEventListener('click', e => {
+  const b = e.target.closest('[data-b]'); if (!b) return;
+  switch (b.dataset.b) {
+    case 'hire': batchStage(true); break;
+    case 'reject': batchStage(false); break;
+    case 'del': S.batchConfirm = true; renderBatchBar(); break;
+    case 'del-yes': batchDelete(); break;
+    case 'del-no': S.batchConfirm = false; renderBatchBar(); break;
+    case 'clear': S.sel.clear(); S.batchConfirm = false; renderBoard(); renderBatchBar(); break;
+    case 'pick-date': pickBefore($('#batch-date').value); break;
+    case 'done': setBatch(false); break;
+  }
+});
+$('#board').addEventListener('change', e => {
+  const t = e.target;
+  if (S.batch && t.matches('input[data-pick]') && S.hires.has(t.dataset.pick)) togglePick(t.dataset.pick, t.checked);
+});
 $('#board').addEventListener('click', e => {
+  const pc = e.target.closest('[data-pick-col]');
+  if (pc) { togglePickCol(pc.dataset.pickCol); return; }
+  if (S.batch) {
+    const c = e.target.closest('.card-open');
+    if (c && S.hires.has(c.dataset.id)) togglePick(c.dataset.id);
+    return;
+  }
   const b = e.target.closest('[data-act]'); if (!b) return;
   const id = b.dataset.id; if (!id || !S.hires.has(id)) return;
   const act = b.dataset.act;

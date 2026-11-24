@@ -159,6 +159,26 @@ img{max-width:100%}
 .rej li{display:flex;gap:8px;align-items:baseline;font-size:13px;min-width:0}
 .rej li span{color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .foot-note{color:var(--ink-3);font-size:12px;padding-block:10px 4px;margin:0}
+
+/* batch tidy-up */
+.btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.pick{position:absolute;top:10px;left:10px;display:flex}
+.pick input,.rej .pick-r{width:18px;height:18px;margin:0;accent-color:var(--accent);cursor:pointer}
+.card.is-batch .card-open{padding-left:28px}
+.card.picked{outline:2px solid var(--accent);outline-offset:-1px;background:var(--accent-soft)}
+.col-pick{all:unset;cursor:pointer;font-size:12px;font-weight:500;color:var(--accent);padding:2px 6px;border-radius:6px}
+.col-pick:hover{background:var(--surface)}
+.col-pick:focus-visible{outline:2px solid var(--accent)}
+.rej li label{display:flex;gap:8px;align-items:center;cursor:pointer;min-width:0}
+.batch-bar{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--surface);border-top:3px solid var(--cd-gold);box-shadow:0 -6px 20px rgba(0,0,0,.12);padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.batch-in{max-width:1500px;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+.batch-n{font-weight:700;margin-right:4px}
+.batch-n b{font-family:var(--mono);font-size:18px;color:var(--accent);font-variant-numeric:tabular-nums}
+.batch-date{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12.5px;color:var(--ink-2);padding-left:10px;border-left:1px solid var(--line)}
+.batch-date input{height:28px;border:1px solid var(--control);border-radius:6px;background:var(--surface);padding:0 6px;font-family:var(--mono);font-size:12.5px}
+.batch-confirm{color:var(--danger);font-weight:500;font-size:13px}
+#pipeline-view.batching{padding-bottom:150px}
+@media (max-width:760px){ .batch-date{border-left:0;padding-left:0;width:100%} }
 .foot{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;align-items:center;color:var(--ink-3);font-size:12px;padding-block:18px 28px;border-top:1px solid var(--line);margin-top:18px}
 .foot b{color:var(--ink-2)}
 

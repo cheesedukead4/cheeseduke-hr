@@ -49,12 +49,14 @@
         </div>
         <input class="inp" type="search" id="q" placeholder="搜尋姓名、職位、部門" aria-label="搜尋">
         <span class="sp"></span>
+        <button class="btn" id="batch-btn" type="button" aria-pressed="false">批次整理</button>
         <button class="btn" id="imp-btn" type="button">匯入表單回覆</button>
         <button class="btn primary" id="add-btn" type="button">＋ 新增面試者</button>
       </div>
       <section class="stats" id="stats" aria-label="本月統計"></section>
       <nav class="tabs" id="tabs" role="tablist" aria-label="步驟"></nav>
       <div class="board-scroll"><div class="board" id="board"></div></div>
+      <div class="batch-bar" id="batch-bar" role="region" aria-label="批次整理" hidden></div>
       <p class="foot-note">勞保、就保須於員工到職當日申報加保（勞工保險條例第 11 條）；健保應於到職 3 日內申報。卡片上的到職日標示會依此提醒。</p>
     </div>
 
