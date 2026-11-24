@@ -15,6 +15,7 @@
  *               createdAt, createdBy, updatedAt, updatedBy }
  *   routines  { id, freq: daily|weekly|monthly, title, due, order, createdAt, createdBy }
  *   checks    { id: d-YYYY-MM-DD | w-YYYY-Www | m-YYYY-MM, date: 期間第一天, freq, done: { 項目 id: { at, by } } }
+ *   jobs      { id, title, keys: 應徵職位關鍵字（逗號分開）, text: 條件（# 段落、- 條件）, order }（職缺條件，管理頁編輯）；hires.crit = { job, ok: [已勾條件的 key] }
  *   recruit   （只能讀，雲端後端寫）{ id, src: screen 篩選名單 | invite 面試邀約 | result 面試結果追蹤 | meta, name, job, ... }
  *             對到看板上的人：result 用「資料表連結」的文件 id（= hires 的 doc-文件id），其他用姓名＋日期相近（extFor）。
  * 權限（HRAuth.can）：edit 人事資料編輯、pii 查看證件、routine 例行工作設定；管理員全部都有。
@@ -152,7 +153,7 @@ const S = {
   month:curMonth(), q:'', tabs:{recruit:'interview', pipeline:'docs'}, open:{}, view:'overview',
   openId:null, creating:false, confirm:null, uploading:{}, pendingSlot:null, showId:false,
   rtEdit:{}, rtConfirm:null, imp:null,
-  batch:false, sel:new Set(), batchConfirm:false, batchDate:''
+  batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[]
 };
 const U = {list:null, admins:[], loading:false, error:'', confirm:null, editing:null};
 const inMonth = s => !!s && s.slice(0,7) === S.month;
@@ -175,7 +176,8 @@ function norm(id, d){
     interviewer:str(d.interviewer), rating: RATING_KEYS.includes(d.rating) ? d.rating : '', comment:str(d.comment),
     ivAt: typeof d.ivAt === 'number' ? d.ivAt : null, ivBy:str(d.ivBy),
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
-    docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : ''
+    docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
+    crit: normCrit(d.crit)
   };
 }
 function normForm(f){
@@ -196,6 +198,7 @@ function pullFromStore(){
   S.routines = new Map(ST.list('routines').map(d => [d.id, normRt(d.id, d)]).filter(([, r]) => r));
   const keys = periodKeys();
   for (const f of FREQS) { const rec = ST.get('checks', keys[f.key]); S.checks[f.key] = {done: rec ? obj(rec.done) : {}}; }
+  S.jobs = ST.list('jobs').map(normJob).filter(Boolean).sort((a, b) => a.order - b.order || (a.title < b.title ? -1 : 1));
   buildRecruit();
   S.loaded = !!ST.status().loaded;
 }
@@ -281,6 +284,72 @@ function extItems(key, useQ = true){
 }
 /** 預計報到日：看板上填的到職日，沒填就用試算表的預計報到日 */
 const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
+
+/* ================= 職缺條件（面試時對照；資料類別 jobs，管理頁編輯） ================= */
+function normJob(d){
+  d = obj(d);
+  const title = str(d.title).slice(0, 60);
+  if (!title || d.id == null) return null;
+  return {id:String(d.id), title, keys:str(d.keys).slice(0, 200), text: typeof d.text === 'string' ? d.text.slice(0, 8000) : '', order: typeof d.order === 'number' ? d.order : 0};
+}
+function normCrit(c){
+  c = obj(c);
+  return {job: typeof c.job === 'string' ? c.job.slice(0, 60) : '', ok: Array.isArray(c.ok) ? c.ok.filter(k => typeof k === 'string' && /^[0-9a-f]{6,16}$/.test(k)).slice(0, 300) : []};
+}
+const JOB_PARSE = new Map();
+/** 條件文字 → [{title, warn, notes, items:[{key, text}]}]：「#」開頭是段落、「-」開頭是一項條件，其他文字是段落說明；段落名稱有「不符合」的只提醒、不勾選 */
+function parseJob(text){
+  if (JOB_PARSE.has(text)) return JOB_PARSE.get(text);
+  const secs = []; let cur = null;
+  const open = t => { cur = {title:t || '條件', warn:/不符合|淘汰/.test(t), notes:[], items:[]}; secs.push(cur); };
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) { open(line.replace(/^#+\s*/, '')); continue; }
+    if (!cur) open('條件');
+    const m = line.match(/^[-－–•・*]\s*(.*)$/);
+    if (m) { if (m[1]) cur.items.push({key:hashStr(cur.title + '|' + m[1]).slice(0, 12), text:m[1]}); }
+    else cur.notes.push(line);
+  }
+  const out = secs.filter(s => s.items.length || s.notes.length);
+  if (JOB_PARSE.size > 50) JOB_PARSE.clear();
+  JOB_PARSE.set(text, out);
+  return out;
+}
+const normPos = s => String(s || '').replace(/烘培/g, '烘焙').replace(/[\s　]+/g, '').toLowerCase();
+const jobKeys = j => j.keys.split(/[,，、;；\s]+/).map(normPos).filter(Boolean);
+/** 這個人要對照哪個職缺：面試畫面選過的優先，否則依應徵職位（看板、人事資料表、試算表）裡的關鍵字 */
+function jobFor(h){
+  if (h.crit.job) { const j = S.jobs.find(x => x.id === h.crit.job); if (j) return j; }
+  const x = R.meta ? extFor(h) : {};
+  for (const p of [h.position, h.form && h.form.position, x.result && x.result.job, x.invite && x.invite.job, x.screen && x.screen.job]) {
+    const n = normPos(p);
+    const j = n && S.jobs.find(jb => jobKeys(jb).some(k => n.includes(k)));
+    if (j) return j;
+  }
+  return null;
+}
+/** 已勾的項目數（不含「不符合」段落） */
+function critCount(h, j){
+  const ok = new Set(h.crit.ok), items = parseJob(j.text).filter(s => !s.warn).flatMap(s => s.items);
+  return {n: items.filter(i => ok.has(i.key)).length, of: items.length};
+}
+function jobHTML(h){
+  const canW = canEdit();
+  if (!S.jobs.length) return `<h3>職缺條件</h3><p class="note top">${isAdmin() ? '還沒有設定職缺條件。到「管理」頁的「職缺條件」新增後，面試時這裡會出現該職缺的條件，可以逐項勾選對照。' : '管理員還沒有設定職缺條件。'}</p>`;
+  const j = jobFor(h), auto = h.crit.job ? jobFor(Object.assign({}, h, {crit:{job:'', ok:h.crit.ok}})) : j;
+  const sel = `<select class="inp" id="job-sel" aria-label="對照的職缺"${canW ? '' : ' disabled'}><option value="">${auto ? `依應徵職位自動判斷（${esc(auto.title)}）` : '選擇職缺…'}</option>${S.jobs.map(x => `<option value="${esc(x.id)}"${h.crit.job === x.id ? ' selected' : ''}>${esc(x.title)}</option>`).join('')}</select>`;
+  if (!j) return `<h3>職缺條件</h3><div class="job-head">${sel}</div><p class="note top">看不出應徵職位「${esc(h.position || '未填')}」對應哪個職缺，請在上面選擇。</p>`;
+  const ok = new Set(h.crit.ok), c = critCount(h, j);
+  const body = parseJob(j.text).map(s => {
+    const n = s.items.filter(i => ok.has(i.key)).length;
+    const list = !s.items.length ? '' : s.warn
+      ? `<ul class="job-list warn">${s.items.map(i => `<li>${esc(i.text)}</li>`).join('')}</ul>`
+      : `<ul class="job-list">${s.items.map(i => `<li><input type="checkbox" id="jc-${i.key}" data-crit="${i.key}"${ok.has(i.key) ? ' checked' : ''}${canW ? '' : ' disabled'}><label for="jc-${i.key}">${esc(i.text)}</label></li>`).join('')}</ul>`;
+    return `<div class="job-sec"><h4>${esc(s.title)}${s.items.length && !s.warn ? `<span class="h-count">${n}/${s.items.length}</span>` : ''}</h4>${s.notes.map(t => `<p class="job-note">${esc(t)}</p>`).join('')}${list}</div>`;
+  }).join('');
+  return `<h3>職缺條件 <span class="h-count">勾選符合的項目・${c.n}/${c.of}</span></h3><div class="job-head"><b>${esc(j.title)}</b>${sel}</div>${body}`;
+}
 
 const docsReady = h => DOC_SLOTS.filter(s => s.required).every(s => h.docs[s.key]);
 const docCount = h => { const req = DOC_SLOTS.filter(s => s.required); return {have:req.filter(s => h.docs[s.key]).length, need:req.length}; };
@@ -613,6 +682,8 @@ function cardHTML(h){
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
     const dc = sheetDecChip(h); if (dc) chips.push(dc);
+    const jb = h.crit.ok.length ? jobFor(h) : null;
+    if (jb) { const c = critCount(h, jb); chips.push(chip(`條件 ${c.n}/${c.of}`, c.of && c.n / c.of >= 0.8 ? 'ok' : '')); }
     if (canW) acts.push(
       `<button class="btn sm" type="button" data-act="comment" data-id="${id}">${h.comment ? '查看評語' : '填寫評語'}</button>`,
       `<button class="btn sm primary" type="button" data-act="hire" data-id="${id}">錄取</button>`,
@@ -1050,8 +1121,33 @@ function renderUsers(){
       ${people}
     </section>
     ${recruitSectionHTML()}
+    ${jobsSectionHTML()}
     ${formSectionHTML()}
   </div>`;
+}
+
+/* ---------- 職缺條件（管理員編輯；打到一半的內容存在 JE.drafts，畫面重畫不會不見） ---------- */
+const JE = {open:'', confirm:'', drafts:{}, msg:'', msgErr:false};
+function jobsSectionHTML(){
+  const rows = S.jobs.map(j => {
+    const id = esc(j.id), d = JE.drafts[j.id] || {}, v = k => d[k] != null ? d[k] : j[k];
+    const n = parseJob(j.text).filter(s => !s.warn).reduce((a, s) => a + s.items.length, 0);
+    const btns = JE.confirm === j.id
+      ? `<span class="confirm-q" style="width:auto">確定刪除「${esc(j.title)}」？面試時勾過的紀錄會留著，但不會再顯示。</span><button class="btn sm danger-solid" type="button" data-j="del-yes" data-id="${id}">刪除</button><button class="btn sm ghost" type="button" data-j="cancel">取消</button>`
+      : `<button class="btn sm primary" type="button" data-j="save" data-id="${id}">儲存</button><button class="btn sm ghost danger" type="button" data-j="del" data-id="${id}">刪除</button>${JE.drafts[j.id] ? '<span class="muted">有還沒儲存的修改</span>' : ''}`;
+    return `<details class="job-ed" data-job="${id}"${JE.open === j.id ? ' open' : ''}><summary><b>${esc(j.title)}</b><span class="muted">關鍵字：${esc(j.keys || '（未設定）')}・${n} 項條件</span></summary>
+      <div class="job-ed-in">
+        <div class="f"><label for="je-title-${id}">職缺名稱</label><input id="je-title-${id}" data-je="title" data-id="${id}" value="${esc(v('title'))}" maxlength="60"></div>
+        <div class="f"><label for="je-keys-${id}">應徵職位裡有這些字就套用（逗號分開）</label><input id="je-keys-${id}" data-je="keys" data-id="${id}" value="${esc(v('keys'))}" maxlength="200"></div>
+        <div class="f"><label for="je-text-${id}">條件：「#」開頭是段落標題，「-」開頭是一項條件，其他文字是說明；段落名稱有「不符合」的只提醒、不勾選</label><textarea id="je-text-${id}" data-je="text" data-id="${id}" rows="12" maxlength="8000">${esc(v('text'))}</textarea></div>
+        <div class="fl-row">${btns}</div>
+      </div></details>`;
+  }).join('');
+  return `<section class="ov-card" aria-labelledby="jb-h"><header class="ov-h"><h2 id="jb-h">職缺條件（面試對照用）</h2><span class="sp"></span><button class="btn" type="button" data-j="add">＋ 新增職缺</button></header>
+    <p class="muted">面試時，抽屜裡會依應徵職位顯示對應職缺的條件，面試官逐項勾選符合的項目。條件存在雲端資料，只有名單內的人看得到，不在公開的網站檔案裡。</p>
+    ${rows || '<p class="rt-empty">還沒有職缺條件。按「＋ 新增職缺」。</p>'}
+    ${JE.msg ? `<p class="imp-msg${JE.msgErr ? ' err' : ''}" role="status">${esc(JE.msg)}</p>` : ''}
+  </section>`;
 }
 
 /* ---------- 招募流程：連結「履歷篩選」試算表（只讀） ---------- */
@@ -1351,6 +1447,10 @@ function refreshDrawer(){
   const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '';
   $('#d-dyn').innerHTML = h.stage === 'docs' ? docs + steps + ext : steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
+  const jb = $('#d-job'), af = jb.contains(document.activeElement) ? document.activeElement.id : '';
+  jb.hidden = h.stage !== 'interview' || (!S.jobs.length && !isAdmin());
+  jb.innerHTML = jb.hidden ? '' : jobHTML(h);
+  if (af) { const el = document.getElementById(af); if (el) el.focus(); }   // 勾選後畫面重畫，焦點留在原來的項目
 }
 const FIELDS = [['f-name','name'],['f-position','position'],['f-dept','dept'],['f-phone','phone'],['f-interview','interviewDate'],['f-ivtime','interviewTime'],['f-start','startDate'],['f-note','note']];
 function fillForm(h){
@@ -1419,7 +1519,7 @@ function openCreate(){
   $('#d-pill').hidden = true;
   $('#iv-form').hidden = true;
   $('.panel').classList.remove('st-interview', 'wide');
-  $('#d-form').innerHTML = ''; $('#d-dyn').innerHTML = ''; $('#d-foot').innerHTML = '';
+  $('#d-form').innerHTML = ''; $('#d-dyn').innerHTML = ''; $('#d-foot').innerHTML = ''; $('#d-job').hidden = true;
   fillForm(null);
   $('#f-name').focus();
 }
@@ -1617,7 +1717,7 @@ function render(){
   if (S.view === 'overview') renderOverview();
   else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
-  else if (S.view === 'users') renderUsers();
+  else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
   if (!$('#slm').hidden) renderSlots();
@@ -1799,6 +1899,39 @@ $('#drawer').addEventListener('click', e => {
   }
 });
 $('#d-close').addEventListener('click', () => closeDrawer());
+$('#d-job').addEventListener('change', e => {
+  const id = S.openId, t = e.target;
+  if (!id || S.creating || !canEdit() || !S.hires.has(id)) return;
+  if (t.id === 'job-sel') { const v = t.value; saveHire(id, r => { r.crit = Object.assign({}, obj(r.crit), {job:v}); }); return; }
+  const k = t.dataset.crit;
+  if (k) saveHire(id, r => { const c = obj(r.crit), ok = new Set(Array.isArray(c.ok) ? c.ok : []); if (t.checked) ok.add(k); else ok.delete(k); r.crit = Object.assign({}, c, {ok:[...ok]}); });
+});
+$('#users-view').addEventListener('click', e => {
+  const b = e.target.closest('[data-j]'); if (!b || !isAdmin()) return;
+  const id = b.dataset.id, cur = id ? ST.get('jobs', id) : null;
+  switch (b.dataset.j) {
+    case 'add': {
+      const nid = rid('j'), now = Date.now();
+      ST.save('jobs', {id:nid, title:'新職缺', keys:'', text:'#必要條件\n- ', order:S.jobs.reduce((m, j) => Math.max(m, j.order), 0) + 1, updatedAt:now, updatedBy:myName()});
+      JE.open = nid; JE.msg = ''; pullFromStore(); renderUsers();
+      const el = document.getElementById('je-title-' + nid); if (el) el.select();
+      break;
+    }
+    case 'save': {
+      if (!cur) return;
+      const d = JE.drafts[id] || {}, title = str(d.title != null ? d.title : cur.title);
+      if (!title) { JE.msg = '請填職缺名稱。'; JE.msgErr = true; renderUsers(); return; }
+      ST.save('jobs', Object.assign(JSON.parse(JSON.stringify(cur)), {title, keys:str(d.keys != null ? d.keys : cur.keys), text: d.text != null ? d.text : cur.text, updatedAt:Date.now(), updatedBy:myName()}));
+      delete JE.drafts[id]; JE.msg = `已儲存「${title}」。`; JE.msgErr = false; pullFromStore(); renderUsers();
+      break;
+    }
+    case 'del': JE.confirm = id; renderUsers(); break;
+    case 'del-yes': if (cur) ST.remove('jobs', id); delete JE.drafts[id]; JE.confirm = ''; JE.msg = '已刪除。'; JE.msgErr = false; pullFromStore(); renderUsers(); break;
+    case 'cancel': JE.confirm = ''; renderUsers(); break;
+  }
+});
+$('#users-view').addEventListener('input', e => { const t = e.target; if (t.dataset && t.dataset.je && t.dataset.id) (JE.drafts[t.dataset.id] = JE.drafts[t.dataset.id] || {})[t.dataset.je] = t.value; });
+$('#users-view').addEventListener('toggle', e => { const d = e.target; if (d.matches && d.matches('details.job-ed')) { if (d.open) JE.open = d.dataset.job; else if (JE.open === d.dataset.job) JE.open = ''; } }, true);
 $('#iv-form').addEventListener('submit', e => { e.preventDefault(); saveIv(false); });
 $('#iv-form').addEventListener('change', () => saveIv(true));
 $('#info-form').addEventListener('submit', e => {
