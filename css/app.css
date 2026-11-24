@@ -529,6 +529,9 @@ html.auth-locked .app{display:none}
 .ob-mode input{accent-color:var(--accent)}
 .ob-err{color:var(--danger)}
 #ob-body textarea{min-height:220px;line-height:1.6}
+.ob-guide{margin:4px 0 12px;padding-left:22px;line-height:1.8}
+.ob-guide li{margin:6px 0}
+.ob-guide .btn{margin-left:6px;vertical-align:middle}
 .tpl-ed{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px}
 .tpl-ed summary{cursor:pointer;padding:10px 12px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
 .tpl-ed textarea{font-family:var(--font);line-height:1.55;min-height:160px}

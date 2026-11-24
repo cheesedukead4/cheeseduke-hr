@@ -1526,11 +1526,11 @@ async function manualAdmin(action, payload, okMsg){
 }
 
 /* ================= 邀約／不邀約／訊息：編寫視窗 ================= */
-const OBM = {row:null, type:'invite', mode:'send', tplId:'', err:''};
+const OBM = {row:null, type:'invite', mode:'send', tplId:'', err:'', guide:null};
 const tplOf = kind => S.tpl.filter(t => t.kind === kind);
 function openOb(type, row){
   if (!canEdit() || !row) return;
-  OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = '';
+  OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = ''; OBM.guide = null;
   const list = type === 'message' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
   OBM.tplId = type === 'message' ? '' : list[0] ? list[0].id : '';
   renderOb(true);
@@ -1538,7 +1538,7 @@ function openOb(type, row){
   document.documentElement.classList.add('lock');
   const ta = $('#ob-text'); if (ta) ta.focus();
 }
-function closeOb(){ $('#obm').hidden = true; OBM.row = null; if ($('#drawer').hidden) document.documentElement.classList.remove('lock'); }
+function closeOb(){ $('#obm').hidden = true; OBM.row = null; OBM.guide = null; if ($('#drawer').hidden) document.documentElement.classList.remove('lock'); }
 function obTplText(){
   const t = S.tpl.find(x => x.id === OBM.tplId);
   return t ? fillTpl(t.text, obCtx(OBM.row, ($('#ob-job') || {}).value)) : '';
@@ -1593,6 +1593,9 @@ function sendOb(manual){
     opts:{job, place: val('ob-place') || S.cfg.place, contactName: val('ob-cname') || S.cfg.contactName, contactPhone: val('ob-cphone') || S.cfg.contactPhone, replyDays: days},
     createdAt:Date.now(), createdBy:myName()};
   ST.save('outbox', rec);
+  // 排入後小幫手送不出去：留在視窗裡帶著做登入步驟
+  const need = how || type === 'skip' ? '' : !RN.configured ? 'setup' : RN.login === 'logged_out' ? 'login' : !rnOnline() ? 'offline' : '';
+  if (need) { OBM.guide = {need, id:rec.id, name:r.name, type, cv: is104(r.cv) ? r.cv : ''}; pullFromStore(); render(); renderGuide(); return; }
   closeOb();
   pullFromStore(); render();
   toast(type === 'skip' ? `${r.name} 標記為不邀約` : how || `${OB_LABEL[type]}已排入，104 小幫手會在 104 送出`, () => { const cur = ST.get('outbox', rec.id); if (cur && (cur.status === 'queued' || cur.status === 'done' || cur.via === 'manual')) { ST.remove('outbox', rec.id); pullFromStore(); render(); } }, how ? 15000 : 0);
@@ -1613,6 +1616,40 @@ function manualSend(text, cv, type){
   copyText(text);
   window.open(cv, '_blank', 'noopener');
   return `內容已複製：${MANUAL_HOW[type] || '在 104 打開表單'}，聯絡內容按 Ctrl+V 貼上，確認通知職務後按【確認】。沒送出就按復原。`;
+}
+/** 排入後小幫手送不出去（沒登入 104／沒在執行／還沒設定）：編寫視窗改成一步一步的引導 */
+function renderGuide(){
+  const g = OBM.guide; if (!g) return;
+  const when = RN.lastSeen ? new Date(RN.lastSeen).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  const head = {login:'還差一步：登入 104', offline:'還差一步：打開小幫手', setup:'還沒設定 104 小幫手'}[g.need];
+  const steps = g.need === 'login' ? [
+      '在<b>裝了小幫手的 Chrome</b> 打開 104 招募管理：<a class="btn sm primary" href="https://vip.104.com.tw/" target="_blank" rel="noopener">打開 104 登入頁 ↗</a>',
+      '照平常的方式登入。登入頁出現「驗證您是人類」要自己勾。',
+      '登入後停在 104 招募管理的頁面 <b>10 秒</b>，小幫手就會知道已經登入。',
+      `小幫手約 1 分鐘內自動送出${esc(g.name)}這一筆，卡片會變成「已送出」。`]
+    : g.need === 'offline' ? [
+      '打開<b>裝了小幫手的那台電腦的 Chrome</b>（電腦和 Chrome 都要開著，視窗可以縮小）。',
+      '確認那個 Chrome 有登入 104 招募管理：<a class="btn sm" href="https://vip.104.com.tw/" target="_blank" rel="noopener">打開 104 ↗</a>',
+      `小幫手約 1 分鐘內自動送出${esc(g.name)}這一筆，卡片會變成「已送出」。${when ? `（小幫手上次連線：${esc(when)}）` : ''}`]
+    : [
+      '在 Chrome 裝好「起士公爵 104 小幫手」擴充功能（安裝步驟見資料夾裡的使用說明）。',
+      '管理頁「104 小幫手」按「產生鑰匙」，貼到小幫手的設定頁。',
+      '在那個 Chrome 登入 104 招募管理，排隊中的這一筆就會送出。'];
+  $('#ob-title').textContent = head;
+  $('#ob-body').innerHTML = `
+    <p class="ob-to">${esc(g.name)} 的${esc(OB_LABEL[g.type] || '訊息')}<b>已排入</b>，但現在還送不出去：</p>
+    <ol class="ob-guide">${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+    ${g.cv ? `<p class="note">急著送的話，也可以改成自己送：內容會先複製好、打開這位應徵者的 104 履歷，你在 104 貼上按確認。</p>` : ''}
+    <div class="form-foot">${g.cv ? `<button class="btn" type="button" id="ob-guide-manual">改成自己送（複製並打開 104）</button>` : ''}<button class="btn primary" type="button" data-ob-close="1">知道了</button></div>`;
+}
+function guideManual(){
+  const g = OBM.guide; if (!g) return;
+  const cur = ST.get('outbox', g.id), o = normOb(cur);
+  if (!o || o.status !== 'queued') { closeOb(); toast('小幫手已經在處理這一筆了，看卡片上的狀態'); return; }
+  const how = manualSend(o.text, o.to.cv, o.type);
+  obUpdate(o.id, {status:'sent', via:'manual', sentAt:Date.now(), result:'在 104 手動送出'});
+  closeOb();
+  toast(how, () => obUpdate(o.id, {status:'queued', via:'', sentAt:0, result:''}), 15000);
 }
 function obUpdate(id, patch){
   const cur = ST.get('outbox', id); if (!cur || !canEdit()) return;
@@ -2472,6 +2509,7 @@ $('#obm').addEventListener('click', e => {
   if (e.target.closest('[data-ob-close]')) { closeOb(); return; }
   if (e.target.closest('#ob-send')) sendOb(false);
   else if (e.target.closest('#ob-manual')) sendOb(true);
+  else if (e.target.closest('#ob-guide-manual')) guideManual();
 });
 $('#obm').addEventListener('change', e => {
   const t = e.target;
