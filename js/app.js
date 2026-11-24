@@ -156,7 +156,8 @@ const S = {
   openId:null, creating:false, confirm:null, uploading:{}, pendingSlot:null, showId:false,
   rtEdit:{}, rtConfirm:null, imp:null,
   batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[],
-  mnQ:'', mnOpen:new Set(), mnFocus:'', rtMn:new Set()
+  mnQ:'', mnOpen:new Set(), mnFocus:'', rtMn:new Set(),
+  outbox:[], tpl:[], cfg:{company:'起士公爵', place:'', contactName:'', contactPhone:'', replyDays:3}
 };
 const U = {list:null, admins:[], loading:false, error:'', confirm:null, editing:null};
 const inMonth = s => !!s && s.slice(0,7) === S.month;
@@ -202,6 +203,10 @@ function pullFromStore(){
   const keys = periodKeys();
   for (const f of FREQS) { const rec = ST.get('checks', keys[f.key]); S.checks[f.key] = {done: rec ? obj(rec.done) : {}}; }
   S.jobs = ST.list('jobs').map(normJob).filter(Boolean).sort((a, b) => a.order - b.order || (a.title < b.title ? -1 : 1));
+  S.outbox = ST.list('outbox').map(normOb).filter(Boolean);
+  const tp = ST.list('tpl');
+  S.cfg = normCfg(tp.find(t => t && t.id === '_cfg'));
+  S.tpl = tp.filter(t => t && t.id !== '_cfg').map(normTpl).filter(Boolean).sort((a, b) => a.order - b.order);
   buildRecruit();
   buildManual();
   S.loaded = !!ST.status().loaded;
@@ -275,12 +280,12 @@ function extItems(key, useQ = true){
   const vis = r => !q || [r.name, r.job].some(x => x.toLowerCase().includes(q));
   if (key === 'x_screen' || key === 'x_pause') {
     const floor = addDays(t, -RC_DAYS.screen);
-    return R.screen.filter(r => (key === 'x_pause') === (r.tier === '不推薦') && rowDay(r) >= floor && !screenTaken(r) && vis(r))
+    return R.screen.filter(r => (key === 'x_pause') === (r.tier === '不推薦') && rowDay(r) >= floor && !screenTaken(r) && !obDecided(obFor(refOf(r))) && vis(r))
       .sort((a, b) => (TIER_RANK[a.tier] ?? 3) - (TIER_RANK[b.tier] ?? 3) || (b.score ?? -1) - (a.score ?? -1) || (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_invite') {
     const floor = addDays(t, -RC_DAYS.invite);
-    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
+    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q)).sort((a, b) => (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_booked') {
     return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14)))
@@ -294,6 +299,73 @@ function extItems(key, useQ = true){
 }
 /** 預計報到日：看板上填的到職日，沒填就用試算表的預計報到日 */
 const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
+
+/* ================= 104 寄件匣（outbox）：看板排入，這台電腦上的「104 自動送出程式」在 104 送出 ================= */
+const OB_TYPES = ['invite', 'thanks', 'message', 'skip'];
+const OB_ST = ['queued', 'sending', 'sent', 'failed', 'canceled', 'done'];
+const OB_LABEL = {invite:'邀約面試', thanks:'感謝函', message:'訊息', skip:'不邀約'};
+const TPL_KINDS = [['invite', '邀約面試'], ['thanks', '感謝函／婉拒'], ['message', '一般訊息']];
+const RN = {configured:false, lastSeen:0, login:'', version:'', note:''};   // 自動送出程式的狀態（formSync 帶回）
+const AIS = {configured:null, model:''};
+function normOb(d){
+  d = obj(d);
+  if (d.id == null || !OB_TYPES.includes(d.type)) return null;
+  const to = obj(d.to), op = obj(d.opts), s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  return {id:String(d.id), type:d.type, status: OB_ST.includes(d.status) ? d.status : 'queued',
+    to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400)}, text:s(d.text, 1000),
+    opts:{job:s(op.job, 80), place:s(op.place, 120), contactName:s(op.contactName, 40), contactPhone:s(op.contactPhone, 40), replyDays: Number.isInteger(op.replyDays) ? op.replyDays : 3},
+    createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, result:s(d.result, 300), tries: Number(d.tries) || 0};
+}
+function normTpl(d){
+  d = obj(d);
+  const title = str(d.title).slice(0, 40);
+  if (d.id == null || !title) return null;
+  return {id:String(d.id), kind: TPL_KINDS.some(k => k[0] === d.kind) ? d.kind : 'message', title, text: typeof d.text === 'string' ? d.text.slice(0, 1000) : '', order: Number(d.order) || 0};
+}
+function normCfg(d){
+  d = obj(d);
+  const s = (v, n, dft) => typeof v === 'string' ? v.slice(0, n) : dft;
+  return {company:s(d.company, 40, '起士公爵'), place:s(d.place, 120, ''), contactName:s(d.contactName, 40, ''), contactPhone:s(d.contactPhone, 40, ''),
+    replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3};
+}
+/** 寄件匣用來對人的鍵：104 履歷連結（沒有就用試算表那一列的 id） */
+const refOf = r => r.ob ? r.ob.to.ref : (r.cv || ('row:' + r.id));
+function obFor(ref){ let best = null; for (const o of S.outbox) if (o.to.ref === ref && (!best || o.createdAt > best.createdAt)) best = o; return best; }
+/** 已經決定邀約或不邀約（排隊中、送出中、已送出，或只標記不邀約） */
+const obDecided = o => !!o && (o.type === 'skip' || ((o.type === 'invite' || o.type === 'thanks') && ['queued', 'sending', 'sent'].includes(o.status)));
+const rnOnline = () => !!RN.lastSeen && Date.now() - RN.lastSeen < 5 * 60000;
+function obChip(o){
+  if (!o) return '';
+  const what = OB_LABEL[o.type];
+  if (o.type === 'skip') return chip('已標記不邀約');
+  if (o.status === 'queued') return chip(`${what}・排隊中`, 'warn');
+  if (o.status === 'sending') return chip(`${what}・送出中`, 'warn');
+  if (o.status === 'sent') return chip(`${what}・${fmtTime(o.sentAt)} 已送出`, 'ok');
+  if (o.status === 'failed') return chip(`${what}・送出失敗`, 'danger');
+  if (o.status === 'canceled') return chip(`${what}・已取消`);
+  return '';
+}
+/** 範本裡的 {{職缺}} 這類欄位換成實際內容；沒有資料的保留原樣，送出前看得到 */
+const fillTpl = (text, ctx) => String(text || '').replace(/\{\{\s*([^}]+?)\s*\}\}/g, (m, k) => ctx[k] ? ctx[k] : m);
+const obCtx = (row, job) => ({'職缺': job || row.job || '', '姓名': row.name || '', '面試地點': S.cfg.place, '公司名稱': S.cfg.company, '應徵連結': APPLY_URL, '人事資料表單連結': APPLY_URL});
+/** 看板上自己邀約、試算表裡還沒有的人（放在「邀約中」） */
+function obInviteRows(q){
+  const seen = new Set(), out = [];
+  [...S.outbox].sort((a, b) => b.createdAt - a.createdAt).forEach(o => {
+    if (o.type !== 'invite' || !['queued', 'sending', 'sent', 'failed'].includes(o.status) || seen.has(o.to.ref)) return;
+    seen.add(o.to.ref);
+    if (R.invite.some(i => o.to.cv && i.cv === o.to.cv)) return;
+    const r = {id:'ob:' + o.id, src:'outbox', name:o.to.name, job:o.to.job, cv:o.to.cv, at: o.createdAt ? ymd(new Date(o.createdAt)) + 'T' + pad(new Date(o.createdAt).getHours()) + ':' + pad(new Date(o.createdAt).getMinutes()) : '',
+      ob:o, st:'', ev:'', ivD:'', ivT:'', plat:'看板邀約', formSt:'', formFill:'', mail:'', sum:'', why:'', tier:'', score:null, type:''};
+    if (rowHired(r) || (q && ![r.name, r.job].some(x => x.toLowerCase().includes(q)))) return;
+    out.push(r);
+  });
+  return out;
+}
+function rowById(id){
+  if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
+  return R.screen.find(r => r.id === id) || R.invite.find(r => r.id === id) || null;
+}
 
 /* ================= 工作清冊（「HR工作清冊」試算表，只能看）：例行工作項目、工作手冊、到期提醒 ================= */
 const M = {meta:null, items:[], byId:new Map()};
@@ -674,6 +746,7 @@ function renderToolbar(){
   bb.textContent = S.batch ? '結束批次整理' : '批次整理';
   $('#ins-note').hidden = rec;
   $('#rc-note').hidden = !rec;
+  const rn = $('#rn-note'); rn.hidden = !rec || !canEdit(); rn.textContent = `104 自動送出程式：${rnLine()}`;
 }
 function renderStats(){
   const all = [...S.hires.values()];
@@ -744,17 +817,28 @@ function extCardHTML(r, key){
     text = [r.sum, why].filter(Boolean).map(s => `<span>${esc(s)}</span>`).join('');
   } else {
     if (r.ivD) chips.push(r.ivD === t ? chip(`今天 ${r.ivT} 面試`, 'warn') : chip(`面試 ${md(r.ivD)}${r.ivT ? ' ' + r.ivT : ''}`, r.ivD < t ? 'warn' : ''));
-    else if (r.at) chips.push(chip(`${shortDT(r.at)} 送出邀約`));
+    else if (r.at && r.src !== 'outbox') chips.push(chip(`${shortDT(r.at)} 送出邀約`));
     if (r.ev) chips.push(evChip(r.ev));
     if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
     if (r.plat) chips.push(chip(r.plat));
+  }
+  const o = r.ob || obFor(refOf(r)), acts = [];
+  if (o) chips.push(obChip(o));
+  if (canEdit()) {
+    const rid_ = esc(r.id);
+    if (key === 'x_screen') acts.push(`<button class="btn sm primary" type="button" data-ob="invite" data-row="${rid_}">邀約</button>`, `<button class="btn sm" type="button" data-ob="reject" data-row="${rid_}">不邀約</button>`);
+    else acts.push(`<button class="btn sm" type="button" data-ob="message" data-row="${rid_}">傳訊息</button>`);
+    if (o && o.status === 'failed') acts.push(`<button class="btn sm" type="button" data-ob="retry" data-ob-id="${esc(o.id)}">重送</button>`);
+    if (o && o.status === 'queued') acts.push(`<button class="btn sm ghost" type="button" data-ob="cancel" data-ob-id="${esc(o.id)}">取消送出</button>`);
   }
   const links = [extLink(r.cv, '104 履歷'), extLink(r.mail, 'Gmail')].filter(Boolean).join('');
   return `<article class="card ext">
     <div class="c-head"><span class="c-name">${esc(r.name)}</span>${r.job ? `<span class="c-role">${esc(r.job)}</span>` : ''}</div>
     ${text ? `<p class="c-why">${text}</p>` : ''}
     <div class="chips">${chips.join('')}</div>
+    ${o && o.status === 'failed' && o.result ? `<p class="c-why"><span class="ob-err">送出失敗：${esc(o.result)}</span></p>` : ''}
     ${links ? `<div class="c-links">${links}</div>` : ''}
+    ${acts.length ? `<div class="c-act">${acts.join('')}</div>` : ''}
   </article>`;
 }
 function cardHTML(h){
@@ -830,7 +914,12 @@ const extLi = (r, note) => `<li>${r.cv ? `<a class="link" href="${esc(r.cv)}" ta
 function colExtraHTML(key, mNum){
   if (key === 'interview') { const rej = rejectedItems(); return foldHTML('rej', `未錄取・${mNum} 月 ${rej.length} 位`, rej.map(hireLi)); }
   if (key === 'confirm') { const dec = declinedItems(); return foldHTML('dec', `婉拒入職・${mNum} 月 ${dec.length} 位`, dec.map(hireLi)); }
-  if (key === 'x_screen' && R.meta) { const p = extItems('x_pause'); return foldHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extLi(r, r.why || r.job))); }
+  if (key === 'x_screen' && R.meta) {
+    const p = extItems('x_pause');
+    const nd = R.screen.filter(r => { const o = obFor(refOf(r)); return o && (o.type === 'skip' || o.type === 'thanks') && obDecided(o); });
+    return foldHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extLi(r, r.why || r.job)))
+      + foldHTML('noinv', `已決定不邀約・${nd.length} 位`, nd.map(r => extLi(r, obFor(refOf(r)).type === 'skip' ? '只標記不邀約' : '感謝函' + ({queued:'排隊中', sending:'送出中', sent:'已送出'}[obFor(refOf(r)).status] || ''))));
+  }
   if (key === 'x_booked' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `應徵者取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r))); }
   return '';
 }
@@ -1032,6 +1121,7 @@ function renderOverview(){
     const remRows = (M.meta ? mnReminders() : []).map(x => `<li><button class="ov-row" type="button" data-mn-go="${esc(x.i.id)}"><span class="ov-who"><span class="ov-name">${esc(x.d.label || x.i.title)}</span><span class="ov-sub">${esc(x.i.title)}・${x.date.replace(/-/g, '/')}</span></span>${chip(dueText(x.n), x.n <= 7 ? 'warn' : '')}</button></li>`).join('');
     alertBody = (rows || remRows ? `<ul class="ov-list">${rows}${remRows}</ul>` : '<p class="rt-empty">目前沒有報到、加保或到期事項需要處理。</p>')
       + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">證件未齊 ${docsMissing} 位 →</button>` : '')
+      + (S.outbox.some(o => o.status === 'failed') ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">104 送出失敗 ${S.outbox.filter(o => o.status === 'failed').length} 筆 →</button>` : '')
       + (confirming ? `<button class="ov-more" type="button" data-go="recruit" data-tab="confirm">錄取待確認入職 ${confirming} 位 →</button>` : '')
       + (pending ? `<button class="ov-more" type="button" data-go="recruit" data-tab="interview">面試待決定 ${pending} 位 →</button>` : '')
       + (fresh.length ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">新履歷 ${fresh.length} 位${top ? `（推薦面試 ${top} 位）` : ''} →</button>` : '');
@@ -1243,6 +1333,7 @@ function renderUsers(){
     </section>
     ${recruitSectionHTML()}
     ${manualSectionHTML()}
+    ${obAdminHTML()}
     ${jobsSectionHTML()}
     ${formSectionHTML()}
   </div>`;
@@ -1289,6 +1380,143 @@ async function manualAdmin(action, payload, okMsg){
     ST.syncNow();
   } catch (e) { MC.msg = e.message; MC.msgErr = true; }
   MC.busy = false; renderUsers();
+}
+
+/* ================= 邀約／不邀約／訊息：編寫視窗 ================= */
+const OBM = {row:null, type:'invite', mode:'send', tplId:'', err:''};
+const tplOf = kind => S.tpl.filter(t => t.kind === kind);
+function openOb(type, row){
+  if (!canEdit() || !row) return;
+  OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = '';
+  const list = type === 'message' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
+  OBM.tplId = type === 'message' ? '' : list[0] ? list[0].id : '';
+  renderOb(true);
+  $('#obm').hidden = false;
+  document.documentElement.classList.add('lock');
+  const ta = $('#ob-text'); if (ta) ta.focus();
+}
+function closeOb(){ $('#obm').hidden = true; OBM.row = null; if ($('#drawer').hidden) document.documentElement.classList.remove('lock'); }
+function obTplText(){
+  const t = S.tpl.find(x => x.id === OBM.tplId);
+  return t ? fillTpl(t.text, obCtx(OBM.row, ($('#ob-job') || {}).value)) : '';
+}
+function renderOb(fresh){
+  const r = OBM.row, type = OBM.type, send = !(type === 'reject' && OBM.mode === 'skip');
+  const keep = {};
+  ['ob-job', 'ob-text', 'ob-place', 'ob-days', 'ob-cname', 'ob-cphone'].forEach(id => { const el = document.getElementById(id); if (el && !fresh) keep[id] = el.value; });
+  const v = (id, dft) => keep[id] != null ? keep[id] : dft;
+  const list = type === 'message' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
+  const opts = (type === 'message' ? '<option value="">（空白）</option>' : '') + list.map(t => `<option value="${esc(t.id)}"${t.id === OBM.tplId ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
+  const text = v('ob-text', fresh ? fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job)) : '');
+  const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息'}[type];
+  $('#ob-title').textContent = `${title}・${r.name}`;
+  const warn = !RN.configured ? '還沒有設定 104 自動送出程式（管理頁），排入後要等程式設定好才會送出。'
+    : !rnOnline() ? '104 自動送出程式目前沒有在執行，排入後要等程式開啟才會送出。'
+    : RN.login === 'logged_out' ? '104 自動送出程式還沒登入 104，請先在程式開的瀏覽器登入。' : '';
+  $('#ob-body').innerHTML = `
+    <p class="ob-to"><b>${esc(r.name)}</b>${r.job ? `・${esc(r.job)}` : ''}${r.cv ? ` <a class="link" href="${esc(r.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>` : ''}</p>
+    ${type === 'reject' ? `<div class="ob-mode" role="radiogroup" aria-label="不邀約的方式">
+      <label><input type="radio" name="ob-mode" value="send"${send ? ' checked' : ''}> 送感謝函</label>
+      <label><input type="radio" name="ob-mode" value="skip"${send ? '' : ' checked'}> 只標記不邀約，不送訊息</label></div>` : ''}
+    ${send ? `
+    <div class="grid2">
+      <div class="f"><label for="ob-tpl">範本</label><select class="inp" id="ob-tpl">${opts}</select></div>
+      <div class="f"><label for="ob-job">104 通知職務</label><input id="ob-job" value="${esc(v('ob-job', r.job || ''))}" maxlength="80"></div>
+      <div class="f full"><label for="ob-text">內容 <span class="h-count" id="ob-count">${text.length}/1000</span></label><textarea id="ob-text" rows="11" maxlength="1000">${esc(text)}</textarea></div>
+      ${type === 'invite' ? `
+      <div class="f"><label for="ob-place">面試地點</label><input id="ob-place" value="${esc(v('ob-place', S.cfg.place))}" maxlength="120"></div>
+      <div class="f"><label for="ob-days">回覆期限（天內）</label><input id="ob-days" type="number" min="1" max="14" value="${esc(v('ob-days', String(S.cfg.replyDays)))}"></div>
+      <div class="f"><label for="ob-cname">聯絡窗口</label><input id="ob-cname" value="${esc(v('ob-cname', S.cfg.contactName))}" maxlength="40"></div>
+      <div class="f"><label for="ob-cphone">聯絡電話</label><input id="ob-cphone" value="${esc(v('ob-cphone', S.cfg.contactPhone))}" maxlength="40"></div>` : ''}
+    </div>
+    <p class="note">按「排入送出」後，這台電腦上的 104 自動送出程式約 1 分鐘內在 104 送出；還沒送出前可以在卡片上按「取消送出」。內容裡還留著 {{…}} 的地方請先改好。</p>`
+    : '<p class="note">只在看板上記下「不邀約」，不會傳任何訊息給應徵者。</p>'}
+    ${send && warn ? `<p class="imp-msg">${esc(warn)}</p>` : ''}
+    ${OBM.err ? `<p class="imp-msg err" role="alert">${esc(OBM.err)}</p>` : ''}
+    <div class="form-foot"><button class="btn" type="button" data-ob-close="1">取消</button><button class="btn primary" type="button" id="ob-send">${send ? '排入送出' : '標記不邀約'}</button></div>`;
+}
+function sendOb(){
+  const r = OBM.row; if (!r || !canEdit()) return;
+  const type = OBM.type === 'reject' ? (OBM.mode === 'skip' ? 'skip' : 'thanks') : OBM.type;
+  const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const text = type === 'skip' ? '' : val('ob-text'), job = val('ob-job') || r.job || '';
+  const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
+    : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : '';
+  if (err) { OBM.err = err; renderOb(false); return; }
+  const days = Math.min(14, Math.max(1, parseInt(val('ob-days'), 10) || S.cfg.replyDays));
+  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : 'queued', to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r)}, text,
+    opts:{job, place: val('ob-place') || S.cfg.place, contactName: val('ob-cname') || S.cfg.contactName, contactPhone: val('ob-cphone') || S.cfg.contactPhone, replyDays: days},
+    createdAt:Date.now(), createdBy:myName()};
+  ST.save('outbox', rec);
+  closeOb();
+  pullFromStore(); render();
+  toast(type === 'skip' ? `${r.name} 標記為不邀約` : `${OB_LABEL[type]}已排入，104 自動送出程式會送出`, () => { const cur = ST.get('outbox', rec.id); if (cur && (cur.status === 'queued' || cur.status === 'done')) ST.remove('outbox', rec.id); });
+}
+function obUpdate(id, patch){
+  const cur = ST.get('outbox', id); if (!cur || !canEdit()) return;
+  ST.save('outbox', Object.assign(JSON.parse(JSON.stringify(cur)), patch, {updatedAt:Date.now(), updatedBy:myName()}));
+  pullFromStore(); render();
+}
+
+/* ---------- 管理頁：104 自動送出程式、訊息預設值與範本、AI 篩選 ---------- */
+const RK = {key:'', busy:false, msg:'', confirm:false};
+const TE = {open:'', confirm:'', drafts:{}, msg:''};
+const AT = {text:'', busy:false, result:null, msg:'', err:false};
+function applyRunnerStatus(j){
+  if (j && j.rn) Object.assign(RN, {configured:!!j.rn.configured, lastSeen:Number(j.rn.lastSeen) || 0, login:String(j.rn.login || ''), version:String(j.rn.version || ''), note:String(j.rn.note || '')});
+  if (j && j.ai) Object.assign(AIS, {configured:!!j.ai.configured, model:String(j.ai.model || '')});
+}
+function rnLine(){
+  const when = ms => new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
+  if (!RN.configured) return '還沒有設定：在管理頁產生鑰匙，貼進這台電腦的 104 自動送出程式。';
+  if (!RN.lastSeen) return '已產生鑰匙，程式還沒連線過。';
+  const login = RN.login === 'ok' ? '已登入 104' : RN.login === 'logged_out' ? '沒有登入 104（請在程式開的瀏覽器登入）' : '104 登入狀態不明';
+  return `${rnOnline() ? '執行中' : '目前沒有在執行'}・上次連線 ${when(RN.lastSeen)}・${login}${RN.note ? '・' + RN.note : ''}`;
+}
+function obAdminHTML(){
+  const c = S.cfg, q = (id, label, val, attrs) => `<div class="f"><label for="${id}">${label}</label><input id="${id}" class="ob-cfg" value="${esc(val)}" ${attrs || ''}></div>`;
+  const tpls = S.tpl.map(t => {
+    const id = esc(t.id), d = TE.drafts[t.id] || {}, v = k => d[k] != null ? d[k] : t[k];
+    const btns = TE.confirm === t.id
+      ? `<span class="confirm-q" style="width:auto">確定刪除「${esc(t.title)}」？</span><button class="btn sm danger-solid" type="button" data-u="te-del-yes" data-id="${id}">刪除</button><button class="btn sm ghost" type="button" data-u="te-cancel">取消</button>`
+      : `<button class="btn sm primary" type="button" data-u="te-save" data-id="${id}">儲存</button><button class="btn sm ghost danger" type="button" data-u="te-del" data-id="${id}">刪除</button>`;
+    return `<details class="tpl-ed" data-tpl="${id}"${TE.open === t.id ? ' open' : ''}><summary><b>${esc(t.title)}</b><span class="muted">${esc((TPL_KINDS.find(k => k[0] === t.kind) || [, ''])[1])}・${t.text.length} 字</span></summary>
+      <div class="job-ed-in">
+        <div class="grid2"><div class="f"><label for="te-title-${id}">名稱</label><input id="te-title-${id}" data-te="title" data-id="${id}" value="${esc(v('title'))}" maxlength="40"></div>
+        <div class="f"><label for="te-kind-${id}">用在</label><select class="inp" id="te-kind-${id}" data-te="kind" data-id="${id}">${TPL_KINDS.map(([k, l]) => `<option value="${k}"${v('kind') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
+        <div class="fl-row">${btns}</div>
+      </div></details>`;
+  }).join('');
+  const r = AT.result;
+  return `<section class="ov-card" aria-labelledby="ob-h"><header class="ov-h"><h2 id="ob-h">104 自動送出・訊息範本・AI 篩選</h2></header>
+    <h3 class="fm-h">104 自動送出程式（這台電腦）</h3>
+    <p>${esc(rnLine())}</p>
+    ${RK.key ? `<div class="mn-path"><code>${esc(RK.key)}</code><button class="btn sm ghost" type="button" data-copy="${esc(RK.key)}">複製</button></div><p class="muted">鑰匙只顯示這一次：貼進程式資料夾的 runner-config.json（"key" 欄位）。</p>` : ''}
+    <div class="fl-row">${RK.confirm
+      ? '<span class="confirm-q" style="width:auto">換新鑰匙後，舊鑰匙馬上失效，程式要改用新的。確定？</span><button class="btn sm danger-solid" type="button" data-u="rk-new-yes">換新鑰匙</button><button class="btn sm ghost" type="button" data-u="rk-cancel">不要</button>'
+      : `<button class="btn sm" type="button" data-u="rk-new"${RK.busy ? ' disabled' : ''}>${RN.configured ? '換新鑰匙' : '產生鑰匙'}</button>`}</div>
+    ${RK.msg ? `<p class="imp-msg" role="status">${esc(RK.msg)}</p>` : ''}
+    <h3 class="fm-h">邀約預設值</h3>
+    <div class="grid2">${q('cfg-company', '公司名稱', c.company, 'maxlength="40"')}${q('cfg-place', '面試地點', c.place, 'maxlength="120"')}${q('cfg-cname', '聯絡窗口', c.contactName, 'maxlength="40"')}${q('cfg-cphone', '聯絡電話', c.contactPhone, 'maxlength="40"')}${q('cfg-days', '回覆期限（天內）', String(c.replyDays), 'type="number" min="1" max="14"')}</div>
+    <h3 class="fm-h">訊息範本 <button class="btn sm" type="button" data-u="te-add">＋ 新增範本</button></h3>
+    ${tpls || '<p class="rt-empty">還沒有範本。</p>'}
+    ${TE.msg ? `<p class="imp-msg" role="status">${esc(TE.msg)}</p>` : ''}
+    <h3 class="fm-h">AI 篩選履歷（Claude）</h3>
+    <p class="${AIS.configured ? '' : 'muted'}">${AIS.configured === null ? '讀取中…' : AIS.configured ? `已設定 Claude API 金鑰（型號 ${esc(AIS.model)}）。` : '還沒設定金鑰：打開 Apps Script 專案「人事工作看板_雲端後端」→ 左側齒輪「專案設定」→「指令碼屬性」→ 新增屬性 ANTHROPIC_API_KEY，值貼上 Anthropic 的 API 金鑰 → 儲存。'}</p>
+    <div class="f"><label for="at-text">貼一段履歷內容試評分（不會存起來）</label><textarea id="at-text" rows="5" maxlength="20000">${esc(AT.text)}</textarea></div>
+    <div class="fl-row"><button class="btn sm" type="button" data-u="ai-test"${AT.busy ? ' disabled' : ''}>${AT.busy ? '評分中…' : '試評分'}</button></div>
+    ${AT.msg ? `<p class="imp-msg${AT.err ? ' err' : ''}" role="status">${esc(AT.msg)}</p>` : ''}
+    ${r ? `<dl class="fd"><dt>分級</dt><dd>${esc(r.tier)}・${esc(r.score)} 分</dd><dt>對應職缺</dt><dd>${esc(r.matched_job)}（履歷寫：${esc(r.applied_job)}）</dd><dt>履歷重點</dt><dd>${esc(r.summary)}</dd><dt>理由</dt><dd>${esc(r.reason)}</dd><dt>用量</dt><dd>${esc(`${r.model}・輸入 ${r.usage.input} + 快取 ${r.usage.cacheRead}・輸出 ${r.usage.output} tokens`)}</dd></dl>` : ''}
+  </section>`;
+}
+function saveCfg(){
+  if (!canEdit()) return;
+  const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const cur = ST.get('tpl', '_cfg');
+  const next = Object.assign(cur ? JSON.parse(JSON.stringify(cur)) : {id:'_cfg'}, {company:g('cfg-company') || '起士公爵', place:g('cfg-place'), contactName:g('cfg-cname'), contactPhone:g('cfg-cphone'),
+    replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), updatedAt:Date.now(), updatedBy:myName()});
+  ST.save('tpl', next);
 }
 
 /* ---------- 職缺條件（管理員編輯；打到一半的內容存在 JE.drafts，畫面重畫不會不見） ---------- */
@@ -1373,6 +1601,7 @@ function applyFormStatus(j){
   if (j.shareTo) FS.shareTo = j.shareTo;
   if (j.rc) applyRecruitStatus(j.rc);
   if (j.mc) applyManualStatus(j.mc);
+  applyRunnerStatus(j);
   FS.loaded = true;
 }
 async function formSync(force){
@@ -1884,7 +2113,7 @@ function render(){
   else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'manual') renderManual();
-  else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed'))) renderUsers(); } // 正在編輯職缺條件時不重畫
+  else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed, .tpl-ed, .ob-cfg, #at-text'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
   if (!$('#slm').hidden) renderSlots();
@@ -2077,6 +2306,70 @@ $('#drawer').addEventListener('click', e => {
   }
 });
 $('#d-close').addEventListener('click', () => closeDrawer());
+$('#obm').addEventListener('click', e => {
+  if (e.target.closest('[data-ob-close]')) { closeOb(); return; }
+  if (e.target.closest('#ob-send')) sendOb();
+});
+$('#obm').addEventListener('change', e => {
+  const t = e.target;
+  if (t.name === 'ob-mode') { OBM.mode = t.value; OBM.err = ''; renderOb(true); }
+  else if (t.id === 'ob-tpl') { OBM.tplId = t.value; const ta = $('#ob-text'); ta.value = obTplText(); $('#ob-count').textContent = `${ta.value.length}/1000`; }
+});
+$('#obm').addEventListener('input', e => { if (e.target.id === 'ob-text') $('#ob-count').textContent = `${e.target.value.length}/1000`; });
+$('#board').addEventListener('click', e => {
+  const b = e.target.closest('[data-ob]'); if (!b || !canEdit()) return;
+  e.stopPropagation();
+  const act = b.dataset.ob;
+  if (act === 'retry') { obUpdate(b.dataset.obId, {status:'queued', tries:0, result:''}); toast('已重新排入送出'); return; }
+  if (act === 'cancel') { const cur = ST.get('outbox', b.dataset.obId); if (cur && cur.status === 'queued') { obUpdate(b.dataset.obId, {status:'canceled'}); toast('已取消送出'); } else toast('已經在送出中，來不及取消'); return; }
+  openOb(act, rowById(b.dataset.row));
+}, true);
+$('#users-view').addEventListener('click', async e => {
+  const b = e.target.closest('[data-u]'); if (!b || !isAdmin()) return;
+  const act = b.dataset.u, id = b.dataset.id;
+  if (act === 'rk-new') { if (RN.configured) { RK.confirm = true; renderUsers(); } else rkNew(); }
+  else if (act === 'rk-new-yes') rkNew();
+  else if (act === 'rk-cancel') { RK.confirm = false; renderUsers(); }
+  else if (act === 'te-add') {
+    const nid = rid('t');
+    ST.save('tpl', {id:nid, kind:'message', title:'新範本', text:'', order:S.tpl.reduce((m, t) => Math.max(m, t.order), 0) + 1, updatedAt:Date.now(), updatedBy:myName()});
+    TE.open = nid; pullFromStore(); renderUsers();
+  }
+  else if (act === 'te-save') {
+    const cur = ST.get('tpl', id); if (!cur) return;
+    const d = TE.drafts[id] || {}, title = str(d.title != null ? d.title : cur.title);
+    if (!title) { TE.msg = '請填範本名稱。'; renderUsers(); return; }
+    ST.save('tpl', Object.assign(JSON.parse(JSON.stringify(cur)), {title, kind: d.kind || cur.kind, text: d.text != null ? d.text : cur.text, updatedAt:Date.now(), updatedBy:myName()}));
+    delete TE.drafts[id]; TE.msg = `已儲存「${title}」。`; pullFromStore(); renderUsers();
+  }
+  else if (act === 'te-del') { TE.confirm = id; renderUsers(); }
+  else if (act === 'te-del-yes') { ST.remove('tpl', id); delete TE.drafts[id]; TE.confirm = ''; TE.msg = '已刪除範本。'; pullFromStore(); renderUsers(); }
+  else if (act === 'te-cancel') { TE.confirm = ''; renderUsers(); }
+  else if (act === 'ai-test') {
+    AT.text = ($('#at-text') || {}).value || AT.text;
+    AT.busy = true; AT.msg = ''; AT.result = null; renderUsers();
+    try { const j = await AU.api('aiTest', {text:AT.text}); AT.result = j.result; AT.msg = ''; AT.err = false; }
+    catch (err) { AT.msg = err.message; AT.err = true; }
+    AT.busy = false; renderUsers();
+  }
+});
+async function rkNew(){
+  RK.busy = true; RK.confirm = false; RK.msg = '產生中…'; renderUsers();
+  try { const j = await AU.api('runnerKeyNew', {}); RK.key = j.key; applyRunnerStatus({rn:j.runner}); RK.msg = ''; }
+  catch (err) { RK.msg = err.message; }
+  RK.busy = false; renderUsers();
+}
+$('#users-view').addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.te && t.dataset.id) (TE.drafts[t.dataset.id] = TE.drafts[t.dataset.id] || {})[t.dataset.te] = t.value;
+  else if (t.id === 'at-text') AT.text = t.value;
+});
+$('#users-view').addEventListener('change', e => {
+  const t = e.target;
+  if (t.classList && t.classList.contains('ob-cfg')) saveCfg();
+  else if (t.dataset && t.dataset.te === 'kind' && t.dataset.id) (TE.drafts[t.dataset.id] = TE.drafts[t.dataset.id] || {}).kind = t.value;
+});
+$('#users-view').addEventListener('toggle', e => { const d = e.target; if (d.matches && d.matches('details.tpl-ed')) { if (d.open) TE.open = d.dataset.tpl; else if (TE.open === d.dataset.tpl) TE.open = ''; } }, true);
 $('#manual-view').addEventListener('input', e => { if (e.target.id === 'mn-q') { S.mnQ = e.target.value.trim(); renderManual(); } });
 $('#manual-view').addEventListener('toggle', e => { const d = e.target; if (d.matches && d.matches('details.mn-item')) { if (d.open) S.mnOpen.add(d.dataset.mn); else S.mnOpen.delete(d.dataset.mn); } }, true);
 document.addEventListener('click', e => {
@@ -2149,6 +2442,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!$('#lightbox').hidden) closeLightbox();
   else if (!$('#umodal').hidden) closeUserForm();
+  else if (!$('#obm').hidden) closeOb();
   else if (!$('#slm').hidden) closeSlots();
   else if (!$('#imp').hidden) closeImport();
   else if (!$('#drawer').hidden) closeDrawer();

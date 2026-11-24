@@ -493,3 +493,15 @@ html.auth-locked .app{display:none}
 .mn-path{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0}
 .mn-path code{font-family:var(--mono);font-size:12px;background:var(--col);padding:2px 6px;border-radius:4px;overflow-wrap:anywhere}
 @media (max-width:480px){ .mn-f{grid-template-columns:minmax(0,1fr);gap:2px} }
+
+/* 104 寄件匣：邀約／不邀約／訊息 */
+.ob-to{margin:0 0 10px;font-size:14px}
+.ob-mode{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 12px;font-size:14px}
+.ob-mode label{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+.ob-mode input{accent-color:var(--accent)}
+.ob-err{color:var(--danger)}
+#ob-body textarea{min-height:220px;line-height:1.6}
+.tpl-ed{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px}
+.tpl-ed summary{cursor:pointer;padding:10px 12px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.tpl-ed textarea{font-family:var(--font);line-height:1.55;min-height:160px}
+.fm-h .btn{margin-left:8px;vertical-align:middle}

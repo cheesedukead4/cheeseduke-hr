@@ -57,6 +57,7 @@
       <div class="board-scroll"><div class="board" id="board"></div></div>
       <div class="batch-bar" id="batch-bar" role="region" aria-label="批次整理" hidden></div>
       <p class="foot-note" id="rc-note" hidden>前三欄（履歷篩選、邀約中、已約面試）來自 hr@ 的「履歷篩選」試算表，每 10 分鐘更新、這裡只能看：Gmail 撈履歷、AI 篩選、寄 104 邀約、寄 Offer 都在試算表裡操作。應徵者的人事資料表進來後，會出現在「面試」。</p>
+      <p class="foot-note" id="rn-note" hidden></p>
       <p class="foot-note" id="ins-note">勞保、就保須於員工到職當日申報加保（勞工保險條例第 11 條）；健保應於到職 3 日內申報。卡片上的到職日標示會依此提醒。</p>
     </div>
 
@@ -153,6 +154,17 @@
       </div>
       <div class="m-foot"><button class="btn ghost" type="button" data-u-close="1">取消</button><button class="btn primary" type="submit" id="u-save">儲存</button></div>
     </form>
+  </div>
+</div>
+
+<div class="modal" id="obm" hidden>
+  <div class="scrim" data-ob-close="1"></div>
+  <div class="m-panel" role="dialog" aria-modal="true" aria-labelledby="ob-title">
+    <div class="p-head">
+      <div class="p-title"><h2 id="ob-title">邀約面試</h2></div>
+      <button class="btn icon" type="button" data-ob-close="1" aria-label="關閉">✕</button>
+    </div>
+    <div class="m-body" id="ob-body"></div>
   </div>
 </div>
 

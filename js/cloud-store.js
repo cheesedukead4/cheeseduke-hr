@@ -8,6 +8,8 @@
  *      slots           面試時段（線上應徵表單用）
  *      jobs            職缺條件（面試時對照；管理頁編輯）
  *      manual          工作清冊：雲端後端從「HR工作清冊」試算表整理的，只能讀
+ *      outbox          104 寄件匣：看板排入的邀約／感謝函／訊息，104 自動送出程式送出後回報狀態
+ *      tpl             訊息範本與邀約預設值（_cfg）
  *      recruit         招募進度：雲端後端從「履歷篩選」試算表整理的，只能讀（READONLY，裝置不上傳也不重建）
  *  - 每類有雲端版本號；上傳時帶「我是根據哪一版改的」，有人搶先更新就先下載，以單筆（id）為單位三方合併後再上傳
  *  - 同一筆的同一個欄位被兩個人改成不同值時，以這台裝置的修改為準，並通知畫面提示
@@ -21,9 +23,9 @@
   var STORE = 'kv';
   var POLL_MS = 30000;
   var PUSH_DELAY_MS = 800;
-  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件', manual: '工作清冊' };
+  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件', manual: '工作清冊', outbox: '104 寄件匣', tpl: '訊息範本' };
   var MONTHLY = ['checks'];   // 依日期年月分檔的種類（資料要有 date 欄位）
-  var KEY_RE = /^(hires|routines|slots|recruit|jobs|manual|checks_\d{6})$/;
+  var KEY_RE = /^(hires|routines|slots|recruit|jobs|manual|outbox|tpl|checks_\d{6})$/;
   var READONLY = ['recruit', 'manual'];   // 雲端後端寫的類別：只下載
 
   var parts = Object.create(null);   // 類別 -> JSON 字串（目前本機值，陣列）
