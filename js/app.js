@@ -365,7 +365,7 @@ function obInviteRows(q){
   });
   return out;
 }
-/* ---------- 104 聊聊：104 小幫手每 5 分鐘讀 104 的對話清單（不打開對話，104 的未讀不會變已讀），只能看；回覆走寄件匣 type chat ---------- */
+/* ---------- 104 聊聊：104 小幫手每分鐘讀 104 的對話清單（不打開對話，104 的未讀不會變已讀），只能看；回覆走寄件匣 type chat ---------- */
 function normChat(d){
   d = obj(d);
   const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
@@ -392,8 +392,10 @@ function chatRow(c){
 }
 function chatPanelHTML(){
   const items = S.chat.items, unread = items.filter(c => c.unread);
-  const upd = RN.chatAt ? `${new Date(RN.chatAt).toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})} 更新` : '';
-  if (!items.length) return `<div class="chat-h"><b>104 聊聊</b><span class="muted">${RN.chatAt ? `目前沒有對話・${esc(upd)}` : '104 小幫手讀到聊聊後會顯示在這裡（每 5 分鐘更新）'}</span></div>`;
+  // 小幫手每分鐘讀一次，沒變就不重送；最近 15 分鐘有送過，就用小幫手最後連線的時間當「檢查」時間
+  const ckAt = RN.chatAt && Date.now() - RN.chatAt < 15 * 60000 ? Math.max(RN.chatAt, RN.lastSeen) : RN.chatAt;
+  const upd = ckAt ? `${new Date(ckAt).toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})} 檢查` : '';
+  if (!items.length) return `<div class="chat-h"><b>104 聊聊</b><span class="muted">${RN.chatAt ? `目前沒有對話・${esc(upd)}` : '104 小幫手讀到聊聊後會顯示在這裡（每分鐘更新）'}</span></div>`;
   const list = S.chatAll ? items.slice(0, 30) : unread.slice(0, 8);
   const rows = list.map(c => {
     const r = chatRow(c);
