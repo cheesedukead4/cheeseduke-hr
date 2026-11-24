@@ -11,5 +11,5 @@ window.HR_AUTH = {
 };
 
 window.HR_CLOUD = {
-  url: ''
+  url: 'https://script.google.com/macros/s/AKfycbx4KyYp5yzs8qU_T5lznuCcmdvFoSX7CwxLQZlje4wbECz5JqtD7U4U3irnFiW-wHr4/exec'
 };
