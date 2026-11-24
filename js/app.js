@@ -157,7 +157,8 @@ const S = {
   rtEdit:{}, rtConfirm:null, imp:null,
   batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[],
   mnQ:'', mnOpen:new Set(), mnFocus:'', rtMn:new Set(),
-  outbox:[], tpl:[], cfg:{company:'起士公爵', place:'', contactName:'', contactPhone:'', replyDays:3}
+  outbox:[], tpl:[], cfg:{company:'起士公爵', place:'', contactName:'', contactPhone:'', replyDays:3},
+  chat:{unread:0, total:0, items:[]}, chatAll:false
 };
 const U = {list:null, admins:[], loading:false, error:'', confirm:null, editing:null};
 const inMonth = s => !!s && s.slice(0,7) === S.month;
@@ -204,6 +205,8 @@ function pullFromStore(){
   for (const f of FREQS) { const rec = ST.get('checks', keys[f.key]); S.checks[f.key] = {done: rec ? obj(rec.done) : {}}; }
   S.jobs = ST.list('jobs').map(normJob).filter(Boolean).sort((a, b) => a.order - b.order || (a.title < b.title ? -1 : 1));
   S.outbox = ST.list('outbox').map(normOb).filter(Boolean);
+  const chl = ST.list('chat'), chm = obj(chl.find(x => x && x.id === '_meta'));
+  S.chat = {unread: Number(chm.unread) || 0, total: Number(chm.total) || 0, items: chl.filter(x => x && x.id !== '_meta').map(normChat).filter(Boolean)};
   const tp = ST.list('tpl');
   S.cfg = normCfg(tp.find(t => t && t.id === '_cfg'));
   S.tpl = tp.filter(t => t && t.id !== '_cfg').map(normTpl).filter(Boolean).sort((a, b) => a.order - b.order);
@@ -301,18 +304,18 @@ function extItems(key, useQ = true){
 const planStart = h => h.startDate || (extFor(h).result || {}).start || '';
 
 /* ================= 104 寄件匣（outbox）：看板排入，瀏覽器擴充功能「104 小幫手」在 104 送出；也可以「複製並打開 104」手動送（via: 'manual'）================= */
-const OB_TYPES = ['invite', 'thanks', 'message', 'skip'];
+const OB_TYPES = ['invite', 'thanks', 'message', 'skip', 'chat'];
 const OB_ST = ['queued', 'sending', 'sent', 'failed', 'canceled', 'done'];
-const OB_LABEL = {invite:'邀約面試', thanks:'感謝函', message:'訊息', skip:'不邀約'};
+const OB_LABEL = {invite:'邀約面試', thanks:'感謝函', message:'訊息', skip:'不邀約', chat:'聊聊'};
 const TPL_KINDS = [['invite', '邀約面試'], ['thanks', '感謝函／婉拒'], ['message', '一般訊息']];
-const RN = {configured:false, lastSeen:0, login:'', version:'', note:''};   // 自動送出程式的狀態（formSync 帶回）
+const RN = {configured:false, lastSeen:0, login:'', version:'', note:'', chatAt:0};   // 自動送出程式的狀態（formSync 帶回）
 const AIS = {configured:null, model:''};
 function normOb(d){
   d = obj(d);
   if (d.id == null || !OB_TYPES.includes(d.type)) return null;
   const to = obj(d.to), op = obj(d.opts), s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
   return {id:String(d.id), type:d.type, status: OB_ST.includes(d.status) ? d.status : 'queued',
-    to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400)}, text:s(d.text, 1000),
+    to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400), room: (rm => rm.jobNo && rm.pId ? {id:s(rm.id, 40), jobNo:s(rm.jobNo, 20), pId:s(rm.pId, 20)} : null)(obj(to.room))}, text:s(d.text, 1000),
     opts:{job:s(op.job, 80), place:s(op.place, 120), contactName:s(op.contactName, 40), contactPhone:s(op.contactPhone, 40), replyDays: Number.isInteger(op.replyDays) ? op.replyDays : 3},
     createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, via:s(d.via, 10), result:s(d.result, 300), tries: Number(d.tries) || 0};
 }
@@ -361,6 +364,54 @@ function obInviteRows(q){
     out.push(r);
   });
   return out;
+}
+/* ---------- 104 聊聊：104 小幫手每 5 分鐘讀 104 的對話清單（不打開對話，104 的未讀不會變已讀），只能看；回覆走寄件匣 type chat ---------- */
+function normChat(d){
+  d = obj(d);
+  const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  if (d.id == null || !d.jobNo || !d.pId) return null;
+  return {id:String(d.id), name:s(d.name, 40), job:s(d.job, 120), jobNo:s(d.jobNo, 20), pId:s(d.pId, 20), last:s(d.last, 160),
+    from: d.from === 'us' ? 'us' : 'them', unread: !!d.unread, time:s(d.time, 19), ev: Number(d.ev) || 0};
+}
+const jobKey = s => String(s || '').replace(/【[^】]*】/g, '').replace(/[\s()（）<>＜＞_\-－—–・·,，/、|]/g, '').toLowerCase();
+/** 這位應徵者在 104 聊聊的對話（姓名相同；同名的再看職缺） */
+function chatFor(r){
+  if (!r || !S.chat.items.length) return null;
+  const same = S.chat.items.filter(c => normName(c.name) === normName(r.name));
+  if (same.length <= 1) return same[0] || null;
+  const j = jobKey(r.job);
+  return same.find(c => j && (jobKey(c.job).includes(j) || j.includes(jobKey(c.job)))) || same[0];
+}
+const chatWhen = t => t && t.length >= 16 ? `${+t.slice(5, 7)}/${+t.slice(8, 10)} ${t.slice(11, 16)}` : '';
+/** 聊聊對話 → 編寫視窗用的資料列（找得到看板上的同一個人就帶 104 履歷連結） */
+function chatRow(c){
+  const rs = [...R.screen, ...R.invite].filter(x => normName(x.name) === normName(c.name));
+  const withCv = rs.filter(x => x.cv);
+  const hit = withCv.find(x => jobKey(x.job) && (jobKey(c.job).includes(jobKey(x.job)) || jobKey(x.job).includes(jobKey(c.job)))) || (withCv.length === 1 ? withCv[0] : null);
+  return {id:'chat:' + c.id, name:c.name, job: c.job.replace(/【[^】]*】/g, '').trim() || (hit ? hit.job : ''), cv: hit ? hit.cv : '', chat:c};
+}
+function chatPanelHTML(){
+  const items = S.chat.items, unread = items.filter(c => c.unread);
+  const upd = RN.chatAt ? `${new Date(RN.chatAt).toLocaleTimeString('zh-TW', {hour:'2-digit', minute:'2-digit'})} 更新` : '';
+  if (!items.length) return `<div class="chat-h"><b>104 聊聊</b><span class="muted">${RN.chatAt ? `目前沒有對話・${esc(upd)}` : '104 小幫手讀到聊聊後會顯示在這裡（每 5 分鐘更新）'}</span></div>`;
+  const list = S.chatAll ? items.slice(0, 30) : unread.slice(0, 8);
+  const rows = list.map(c => {
+    const r = chatRow(c);
+    return `<li class="chat-row${c.unread ? ' unread' : ''}">
+      <div class="chat-who"><span class="c-name">${esc(c.name)}</span>${c.unread ? chip('未讀', 'warn') : ''}<span class="chat-job">${esc(r.job)}</span></div>
+      <p class="chat-last"><span class="chat-from">${c.from === 'us' ? '我們' : '對方'}：</span>${esc(c.last || '（檔案或系統訊息）')}</p>
+      <div class="chat-meta"><span class="muted">${esc(chatWhen(c.time))}</span>${r.cv ? extLink(r.cv, '104 履歷') : ''}${canEdit() ? `<button class="btn sm" type="button" data-chat-reply="${esc(c.id)}">回覆</button>` : ''}</div>
+    </li>`;
+  }).join('');
+  return `<div class="chat-h"><b>104 聊聊</b>${S.chat.unread ? chip(`未讀 ${S.chat.unread}`, 'warn') : chip('沒有未讀', 'ok')}<span class="muted">${esc(upd)}</span><span class="sp"></span>
+      <button class="btn sm ghost" type="button" data-chat-all="1" aria-pressed="${S.chatAll}">${S.chatAll ? '只看未讀' : `全部對話（${items.length}）`}</button></div>
+    ${rows ? `<ul class="chat-list">${rows}</ul>` : `<p class="muted chat-empty">沒有未讀的聊聊。</p>`}`;
+}
+function renderChat(){
+  const el = $('#chat-panel'); if (!el) return;
+  const show = curBoard() === 'recruit' && S.loaded && (RN.configured || S.chat.items.length > 0);
+  el.hidden = !show;
+  if (show) el.innerHTML = chatPanelHTML();
 }
 function rowById(id){
   if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
@@ -822,12 +873,14 @@ function extCardHTML(r, key){
     if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
     if (r.plat) chips.push(chip(r.plat));
   }
-  const o = r.ob || obFor(refOf(r)), acts = [];
+  const o = r.ob || obFor(refOf(r)), acts = [], ch = chatFor(r);
   if (o) chips.push(obChip(o));
+  if (ch && ch.unread) chips.push(chip('聊聊未讀', 'warn'));
   if (canEdit()) {
     const rid_ = esc(r.id);
-    if (key === 'x_screen') acts.push(`<button class="btn sm primary" type="button" data-ob="invite" data-row="${rid_}">邀約</button>`, `<button class="btn sm" type="button" data-ob="reject" data-row="${rid_}">不邀約</button>`);
-    else acts.push(`<button class="btn sm" type="button" data-ob="message" data-row="${rid_}">傳訊息</button>`);
+    const chatBtn = ch ? `<button class="btn sm${ch.unread ? ' primary' : ''}" type="button" data-ob="chat" data-row="${rid_}" data-room="${esc(ch.id)}">${ch.unread ? '回覆聊聊' : '傳聊聊'}</button>` : '';
+    if (key === 'x_screen') { acts.push(`<button class="btn sm primary" type="button" data-ob="invite" data-row="${rid_}">邀約</button>`, `<button class="btn sm" type="button" data-ob="reject" data-row="${rid_}">不邀約</button>`); if (ch && ch.unread) acts.push(chatBtn); }
+    else acts.push(chatBtn || `<button class="btn sm" type="button" data-ob="message" data-row="${rid_}">傳訊息</button>`);
     if (o && o.status === 'failed') acts.push(`<button class="btn sm" type="button" data-ob="retry" data-ob-id="${esc(o.id)}">重送</button>`);
     if (o && o.status === 'failed' && o.text && is104(o.to.cv)) acts.push(`<button class="btn sm" type="button" data-ob="manual" data-ob-id="${esc(o.id)}">改手動送</button>`);
     if (o && o.status === 'queued') acts.push(`<button class="btn sm ghost" type="button" data-ob="cancel" data-ob-id="${esc(o.id)}">取消送出</button>`);
@@ -1264,6 +1317,7 @@ function renderOverview(){
     const remRows = (M.meta ? mnReminders() : []).map(x => `<li><button class="ov-row" type="button" data-mn-go="${esc(x.i.id)}"><span class="ov-who"><span class="ov-name">${esc(x.d.label || x.i.title)}</span><span class="ov-sub">${esc(x.i.title)}・${x.date.replace(/-/g, '/')}</span></span>${chip(dueText(x.n), x.n <= 7 ? 'warn' : '')}</button></li>`).join('');
     alertBody = (rows || remRows ? `<ul class="ov-list">${rows}${remRows}</ul>` : '<p class="rt-empty">目前沒有報到、加保或到期事項需要處理。</p>')
       + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">證件未齊 ${docsMissing} 位 →</button>` : '')
+      + (S.chat.unread ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">104 聊聊未讀 ${S.chat.unread} 則 →</button>` : '')
       + (S.outbox.some(o => o.status === 'failed') ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">104 送出失敗 ${S.outbox.filter(o => o.status === 'failed').length} 筆 →</button>` : '')
       + (confirming ? `<button class="ov-more" type="button" data-go="recruit" data-tab="confirm">錄取待確認入職 ${confirming} 位 →</button>` : '')
       + (pending ? `<button class="ov-more" type="button" data-go="recruit" data-tab="interview">面試待決定 ${pending} 位 →</button>` : '')
@@ -1531,8 +1585,8 @@ const tplOf = kind => S.tpl.filter(t => t.kind === kind);
 function openOb(type, row){
   if (!canEdit() || !row) return;
   OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = ''; OBM.guide = null;
-  const list = type === 'message' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
-  OBM.tplId = type === 'message' ? '' : list[0] ? list[0].id : '';
+  const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
+  OBM.tplId = type === 'message' || type === 'chat' ? '' : list[0] ? list[0].id : '';
   renderOb(true);
   $('#obm').hidden = false;
   document.documentElement.classList.add('lock');
@@ -1548,10 +1602,10 @@ function renderOb(fresh){
   const keep = {};
   ['ob-job', 'ob-text', 'ob-place', 'ob-days', 'ob-cname', 'ob-cphone'].forEach(id => { const el = document.getElementById(id); if (el && !fresh) keep[id] = el.value; });
   const v = (id, dft) => keep[id] != null ? keep[id] : dft;
-  const list = type === 'message' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
-  const opts = (type === 'message' ? '<option value="">（空白）</option>' : '') + list.map(t => `<option value="${esc(t.id)}"${t.id === OBM.tplId ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
+  const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
+  const opts = (type === 'message' || type === 'chat' ? '<option value="">（空白）</option>' : '') + list.map(t => `<option value="${esc(t.id)}"${t.id === OBM.tplId ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
   const text = v('ob-text', fresh ? fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job)) : '');
-  const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息'}[type];
+  const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息', chat:'104 聊聊'}[type];
   $('#ob-title').textContent = `${title}・${r.name}`;
   const warn = !RN.configured ? '還沒有設定 104 小幫手（管理頁），排入後要等小幫手設定好才會送出；也可以按「複製並打開 104」自己送。'
     : !rnOnline() ? '104 小幫手目前沒有在執行（裝了小幫手的瀏覽器沒開），排入後要等它開了才會送出；急的話按「複製並打開 104」自己送。'
@@ -1561,10 +1615,11 @@ function renderOb(fresh){
     ${type === 'reject' ? `<div class="ob-mode" role="radiogroup" aria-label="不邀約的方式">
       <label><input type="radio" name="ob-mode" value="send"${send ? ' checked' : ''}> 送感謝函</label>
       <label><input type="radio" name="ob-mode" value="skip"${send ? '' : ' checked'}> 只標記不邀約，不送訊息</label></div>` : ''}
+    ${type === 'chat' && r.chat ? `<p class="chat-ctx"><span class="chat-from">${r.chat.from === 'us' ? '我們' : '對方'}最後說（${esc(chatWhen(r.chat.time))}）：</span>${esc(r.chat.last || '（檔案或系統訊息）')}</p>` : ''}
     ${send ? `
     <div class="grid2">
       <div class="f"><label for="ob-tpl">範本</label><select class="inp" id="ob-tpl">${opts}</select></div>
-      <div class="f"><label for="ob-job">104 通知職務</label><input id="ob-job" value="${esc(v('ob-job', r.job || ''))}" maxlength="80"></div>
+      ${type === 'chat' ? '' : `<div class="f"><label for="ob-job">104 通知職務</label><input id="ob-job" value="${esc(v('ob-job', r.job || ''))}" maxlength="80"></div>`}
       <div class="f full"><label for="ob-text">內容 <span class="h-count" id="ob-count">${text.length}/1000</span></label><textarea id="ob-text" rows="11" maxlength="1000">${esc(text)}</textarea></div>
       ${type === 'invite' ? `
       <div class="f"><label for="ob-place">面試地點</label><input id="ob-place" value="${esc(v('ob-place', S.cfg.place))}" maxlength="120"></div>
@@ -1572,7 +1627,7 @@ function renderOb(fresh){
       <div class="f"><label for="ob-cname">聯絡窗口</label><input id="ob-cname" value="${esc(v('ob-cname', S.cfg.contactName))}" maxlength="40"></div>
       <div class="f"><label for="ob-cphone">聯絡電話</label><input id="ob-cphone" value="${esc(v('ob-cphone', S.cfg.contactPhone))}" maxlength="40"></div>` : ''}
     </div>
-    <p class="note">「排入送出」：104 小幫手約 1 分鐘內在 104 自動送出，還沒送出前可以在卡片上按「取消送出」。「複製並打開 104」：內容先複製好、打開這位應徵者的 104 履歷，你在 104 貼上、按確認（任何電腦都能用）。內容裡還留著 {{…}} 的地方請先改好。</p>`
+    <p class="note">${type === 'chat' ? '「排入送出」：104 小幫手約 1 分鐘內在 104 聊聊送出這段文字（那則對話在 104 會變成已讀）。' : ''}「排入送出」：104 小幫手約 1 分鐘內在 104 自動送出，還沒送出前可以在卡片上按「取消送出」。「複製並打開 104」：內容先複製好、打開這位應徵者的 104 履歷，你在 104 貼上、按確認（任何電腦都能用）。內容裡還留著 {{…}} 的地方請先改好。</p>`
     : '<p class="note">只在看板上記下「不邀約」，不會傳任何訊息給應徵者。</p>'}
     ${send && warn ? `<p class="imp-msg">${esc(warn)}</p>` : ''}
     ${OBM.err ? `<p class="imp-msg err" role="alert">${esc(OBM.err)}</p>` : ''}
@@ -1583,13 +1638,14 @@ function sendOb(manual){
   const type = OBM.type === 'reject' ? (OBM.mode === 'skip' ? 'skip' : 'thanks') : OBM.type;
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const text = type === 'skip' ? '' : val('ob-text'), job = val('ob-job') || r.job || '';
+  const room = type === 'chat' && r.chat ? {id:r.chat.id, jobNo:r.chat.jobNo, pId:r.chat.pId} : null;
   const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
-    : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : '';
+    : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : type === 'chat' && !room ? '找不到這位應徵者的 104 聊聊對話。' : '';
   if (!err && manual && !is104(r.cv)) { OBM.err = '這位應徵者沒有 104 履歷連結，不能在 104 送出。'; renderOb(false); return; }
   if (err) { OBM.err = err; renderOb(false); return; }
   const days = Math.min(14, Math.max(1, parseInt(val('ob-days'), 10) || S.cfg.replyDays));
   const how = manual && type !== 'skip' ? manualSend(text, r.cv, type) : '';   // 要在按鈕的點擊裡複製、開分頁
-  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : how ? 'sent' : 'queued', ...(how ? {via:'manual', sentAt:Date.now(), result:'在 104 手動送出'} : {}), to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r)}, text,
+  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : how ? 'sent' : 'queued', ...(how ? {via:'manual', sentAt:Date.now(), result:'在 104 手動送出'} : {}), to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r), ...(room ? {room} : {})}, text,
     opts:{job, place: val('ob-place') || S.cfg.place, contactName: val('ob-cname') || S.cfg.contactName, contactPhone: val('ob-cphone') || S.cfg.contactPhone, replyDays: days},
     createdAt:Date.now(), createdBy:myName()};
   ST.save('outbox', rec);
@@ -1602,7 +1658,7 @@ function sendOb(manual){
 }
 /** 半自動：內容複製到剪貼簿、打開這位應徵者的 104 應徵履歷，使用者自己在 104 貼上按確認 */
 const is104 = u => /^https:\/\/vip\.104\.com\.tw\//.test(u || '');
-const MANUAL_HOW = {invite:'在 104 按【邀約】→【詢問意願】', thanks:'在 104 按【感謝函】', message:'在 104 按【邀約】→【詢問意願】'};
+const MANUAL_HOW = {invite:'在 104 按【邀約】→【詢問意願】', thanks:'在 104 按【感謝函】', message:'在 104 按【邀約】→【詢問意願】', chat:'在 104 打開右下角【聊聊】，找到這位應徵者的對話'};
 function copyText(text){
   const ta = document.createElement('textarea');
   ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0';
@@ -1662,7 +1718,7 @@ const RK = {key:'', busy:false, msg:'', confirm:false};
 const TE = {open:'', confirm:'', drafts:{}, msg:''};
 const AT = {text:'', busy:false, result:null, msg:'', err:false};
 function applyRunnerStatus(j){
-  if (j && j.rn) Object.assign(RN, {configured:!!j.rn.configured, lastSeen:Number(j.rn.lastSeen) || 0, login:String(j.rn.login || ''), version:String(j.rn.version || ''), note:String(j.rn.note || '')});
+  if (j && j.rn) Object.assign(RN, {configured:!!j.rn.configured, lastSeen:Number(j.rn.lastSeen) || 0, login:String(j.rn.login || ''), version:String(j.rn.version || ''), note:String(j.rn.note || ''), chatAt:Number(j.rn.chatAt) || 0});
   if (j && j.ai) Object.assign(AIS, {configured:!!j.ai.configured, model:String(j.ai.model || '')});
 }
 function rnLine(){
@@ -2309,7 +2365,7 @@ function render(){
   showView();
   renderViews(); renderBanner(); renderFoot(); renderSync();
   if (S.view === 'overview') renderOverview();
-  else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderBoard(); renderBatchBar(); }
+  else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderChat(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'manual') renderManual();
   else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed, .tpl-ed, .ob-cfg, #at-text'))) renderUsers(); } // 正在編輯職缺條件時不重畫
@@ -2517,6 +2573,12 @@ $('#obm').addEventListener('change', e => {
   else if (t.id === 'ob-tpl') { OBM.tplId = t.value; const ta = $('#ob-text'); ta.value = obTplText(); $('#ob-count').textContent = `${ta.value.length}/1000`; }
 });
 $('#obm').addEventListener('input', e => { if (e.target.id === 'ob-text') $('#ob-count').textContent = `${e.target.value.length}/1000`; });
+$('#chat-panel').addEventListener('click', e => {
+  if (e.target.closest('[data-chat-all]')) { S.chatAll = !S.chatAll; renderChat(); return; }
+  const b = e.target.closest('[data-chat-reply]'); if (!b || !canEdit()) return;
+  const c = S.chat.items.find(x => x.id === b.dataset.chatReply);
+  if (c) openOb('chat', chatRow(c));
+});
 $('#board').addEventListener('click', e => {
   const b = e.target.closest('[data-ob]'); if (!b || !canEdit()) return;
   e.stopPropagation();
@@ -2529,6 +2591,7 @@ $('#board').addEventListener('click', e => {
     toast(how, () => obUpdate(o.id, {status:'failed', via:'', sentAt:0, result:o.result}), 15000);
     return;
   }
+  if (act === 'chat') { const r = rowById(b.dataset.row), c = S.chat.items.find(x => x.id === b.dataset.room); if (r && c) openOb('chat', Object.assign({}, r, {chat:c})); return; }
   if (act === 'retry') { obUpdate(b.dataset.obId, {status:'queued', tries:0, result:''}); toast('已重新排入送出'); return; }
   if (act === 'cancel') { const cur = ST.get('outbox', b.dataset.obId); if (cur && cur.status === 'queued') { obUpdate(b.dataset.obId, {status:'canceled'}); toast('已取消送出'); } else toast('已經在送出中，來不及取消'); return; }
   openOb(act, rowById(b.dataset.row));
