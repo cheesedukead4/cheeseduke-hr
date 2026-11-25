@@ -29,9 +29,9 @@ const AU = window.HRAuth, ST = window.HRStore;
 
 /* ================= 定義 ================= */
 const STAGES = [
-  {key:'x_screen',    board:'recruit',  n:1, title:'履歷篩選',    hint:'Gmail 收到、AI 已分級的履歷'},
+  {key:'x_screen',    board:'recruit',  n:1, title:'履歷篩選',    hint:'104 收到、看板已評分分級的履歷'},
   {key:'x_invite',    board:'recruit',  n:2, title:'邀約中',      hint:'已送出邀約，等應徵者選時間'},
-  {key:'x_booked',    board:'recruit',  n:3, title:'已約面試',    hint:'已選時間，等填人事資料表'},
+  {key:'x_booked',    board:'recruit',  n:3, title:'已約面試',    hint:'舊流程（Google 預約）選好時間的人；看板邀約選好時間的直接進「面試」'},
   {key:'interview',   board:'recruit',  n:4, title:'面試',        hint:'面試後決定錄取或不錄取'},
   {key:'confirm',     board:'recruit',  n:5, title:'確認入職',    hint:'錄取後確認要不要來'},
   {key:'offer',       board:'recruit',  n:6, title:'Offer',       hint:'寄 Offer，等報到'},
@@ -60,7 +60,7 @@ const STEP_DONE = {interview:'面試結果：錄取', confirm:'確認入職：�
 const STEP_HINT = {
   interview:'確認面試結果後，按「錄取」或「未錄取」。',
   confirm:'和應徵者確認要不要來：要 → 寄 Offer；不要 → 婉拒入職。',
-  offer:'在「履歷篩選」試算表寄出 Offer、確認報到日；報到當天按「已報到」。',
+  offer:'寄出 Offer、確認報到日；報到當天按「已報到」。',
   docs:'拍照上傳身分證／居留證正反面，存摺封面可一併上傳。',
   apollo_up:'將新人人事資料上傳至 APOLLO。',
   apollo_down:'自 APOLLO 下載加保所需檔案。',
@@ -863,7 +863,7 @@ function renderStats(){
     const scr = R.meta ? extItems('x_screen', false) : null, inv = R.meta ? extItems('x_invite', false) : null;
     const waiting = all.filter(h => h.stage === 'offer');
     items = [
-      ['新履歷', scr ? v(scr.length) : '–', scr ? `近 ${RC_DAYS.screen} 天・推薦面試 ${scr.filter(r => r.tier === '推薦面試').length} 位` : '尚未連結履歷篩選試算表', ''],
+      ['新履歷', scr ? v(scr.length) : '–', scr ? `近 ${RC_DAYS.screen} 天・推薦面試 ${scr.filter(r => r.tier === '推薦面試').length} 位` : '還沒有履歷', ''],
       ['邀約中', inv ? v(inv.length) : '–', inv ? '等應徵者選時間' : '尚未連結', ''],
       ['面試人數', v(interviewed.length), `${mLabel}面試`, ''],
       ['錄取人數', v(hired.length), `錄取率 ${S.loaded ? rate : '—'}`, ''],
@@ -897,7 +897,7 @@ const decCls = s => /確認錄取|^錄取/.test(s) ? 'ok' : /不錄取|婉拒|�
 function sheetDecChip(h){
   const rs = extFor(h).result;
   const s = rs && (rs.dec || rs.res);
-  return s ? chip(`試算表：${s}`, decCls(s)) : '';
+  return s ? chip(`舊紀錄：${s}`, decCls(s)) : '';
 }
 function startChip(h){
   const d = planStart(h);
@@ -1035,7 +1035,7 @@ function renderBoard(){
     const items = S.loaded && (!ext || R.meta) ? colItems(st.key) : [];
     let body;
     if (!S.loaded) body = '<div class="col-empty">讀取中…</div>';
-    else if (ext && !R.meta) body = `<div class="col-empty">${st.key === 'x_screen' ? '管理員在「管理」頁連結「履歷篩選」試算表後，這裡會出現 Gmail 收到、AI 篩選過的履歷。' : '尚未連結履歷篩選試算表'}</div>`;
+    else if (ext && !R.meta) body = `<div class="col-empty">${st.key === 'x_screen' ? '104 應徵履歷進來後會出現在這裡（hr@ 的履歷篩選程式每 5 分鐘送一次，看板自動評分）。' : '還沒有資料'}</div>`;
     else if (!items.length) body = `<div class="col-empty">${esc(S.q ? '沒有符合搜尋的人' : EMPTY[st.key])}</div>`;
     else body = items.map(x => ext ? extCardHTML(x, st.key) : cardHTML(x)).join('');
     const extra = S.loaded ? colExtraHTML(st.key, mNum) : '';
@@ -1852,7 +1852,7 @@ function jobsSectionHTML(){
 }
 
 /* ---------- 招募流程：連結「履歷篩選」試算表（只讀） ---------- */
-const RC = {configured:null, url:'', name:'', lastSync:0, lastError:'', counts:{}, missing:[], shareTo:'', draft:null, busy:false, msg:'', msgErr:false, confirmUnlink:false};
+const RC = {configured:null, url:'', name:'', lastSync:0, lastError:'', counts:{}, missing:[], shareTo:'', frozen:0, rs:{lastMail:0, lastAdd:0}, draft:null, busy:false, msg:'', msgErr:false, confirmUnlink:false, confirmFreeze:false};
 function applyRecruitStatus(j){
   if (!j || typeof j !== 'object') return;
   RC.configured = !!j.configured;
@@ -1861,27 +1861,39 @@ function applyRecruitStatus(j){
   RC.lastSync = j.lastSync || 0; RC.lastError = j.lastError || '';
   RC.counts = obj(j.counts); RC.missing = Array.isArray(j.missing) ? j.missing.filter(x => typeof x === 'string') : [];
   if (j.shareTo) RC.shareTo = j.shareTo;
+  RC.frozen = Number(j.frozen) || 0;
+  const rs = obj(j.rs); RC.rs = {lastMail: Number(rs.lastMail) || 0, lastAdd: Number(rs.lastAdd) || 0};
 }
 function recruitSectionHTML(){
-  const when = ms => ms ? new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '還沒同步過';
-  const c = RC.counts;
-  const status = !FS.loaded ? '讀取中…'
-    : RC.configured ? `已連結「${RC.name || '履歷篩選'}」・上次同步 ${when(RC.lastSync)}・每 10 分鐘自動同步${RC.lastSync ? `（篩選名單 ${c.screen | 0}、面試邀約 ${c.invite | 0}、面試結果 ${c.result | 0} 筆）` : ''}`
-    : '尚未連結：「招募」頁的履歷篩選、邀約中、已約面試三欄會是空的。';
+  const when = ms => ms ? new Date(ms).toLocaleString('zh-TW', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '還沒有';
+  const c = RC.counts, rs = RC.rs, stale = rs.lastMail && Date.now() - rs.lastMail > 30 * 60000;
+  const intake = !FS.loaded ? '讀取中…'
+    : rs.lastMail ? `hr@ 的履歷篩選程式上次送來 ${when(rs.lastMail)}・上次收進新履歷 ${when(rs.lastAdd)}`
+    : '還沒收到 hr@ 履歷篩選程式送來的履歷。';
+  const sheet = RC.configured ? `還在讀舊「${RC.name || '履歷篩選'}」試算表（試算表裡的邀約、面試結果）・上次同步 ${when(RC.lastSync)}${RC.lastSync ? `（篩選名單 ${c.screen | 0}、面試邀約 ${c.invite | 0}、面試結果 ${c.result | 0} 筆）` : ''}`
+    : RC.frozen ? `舊「履歷篩選」試算表已在 ${when(RC.frozen)} 停用；之前讀到的資料留著，照日期慢慢不顯示。`
+    : '沒有連結舊「履歷篩選」試算表。';
   const url = RC.draft != null ? RC.draft : RC.url;
-  return `<section class="ov-card" aria-labelledby="rc-h"><header class="ov-h"><h2 id="rc-h">招募流程（履歷篩選試算表）</h2></header>
-    <p class="muted">貼上 hr@cheeseduke.com.tw 的「履歷篩選」試算表網址。要先用擁有試算表的帳號，把試算表共用給 <b>${esc(RC.shareTo || FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。App 只讀不寫：Gmail 撈履歷、AI 篩選、寄 104 邀約、寄 Offer 仍在試算表裡操作，「招募」頁顯示每個人走到哪一步。</p>
-    <p class="${RC.configured ? '' : 'muted'}">${esc(status)}</p>
-    ${RC.missing.length ? `<p class="imp-msg">試算表裡找不到這些工作表，對應的欄位會是空的：${esc(RC.missing.join('、'))}</p>` : ''}
-    ${RC.lastError ? `<p class="imp-msg err">上次同步失敗：${esc(RC.lastError)}</p>` : ''}
-    <div class="fl-row">
+  const linkRow = `<div class="fl-row">
       <input class="inp" id="rc-url" type="url" value="${esc(url)}" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="履歷篩選試算表網址">
-      <button class="btn primary" type="button" data-u="rc-link"${RC.busy ? ' disabled' : ''}>${RC.configured ? '重新連結' : '連結'}</button>
-    </div>
+      <button class="btn${RC.configured ? ' primary' : ''}" type="button" data-u="rc-link"${RC.busy ? ' disabled' : ''}>${RC.configured || RC.frozen ? '重新連結' : '連結'}</button>
+    </div>`;
+  const btns = !RC.configured ? '' : RC.confirmFreeze
+    ? '<span class="confirm-q" style="width:auto">確定停用舊試算表？之後不再讀它，已讀到的資料留著；邀約、面試、錄取都在看板操作。</span><button class="btn sm danger-solid" type="button" data-u="rc-freeze-yes">停用</button><button class="btn sm ghost" type="button" data-u="rc-cancel">不要</button>'
+    : RC.confirmUnlink
+    ? '<span class="confirm-q" style="width:auto">確定取消連結？「招募」頁前三欄會清空（看板收到的履歷也一起清掉），試算表不受影響。</span><button class="btn sm danger-solid" type="button" data-u="rc-unlink-yes">取消連結</button><button class="btn sm ghost" type="button" data-u="rc-cancel">不要</button>'
+    : `<button class="btn sm" type="button" data-u="rc-sync"${RC.busy ? ' disabled' : ''}>立即同步</button><button class="btn sm primary" type="button" data-u="rc-freeze"${RC.busy ? ' disabled' : ''}>停用試算表（保留資料）</button><button class="btn sm ghost danger" type="button" data-u="rc-unlink">取消連結</button>`;
+  return `<section class="ov-card" aria-labelledby="rc-h"><header class="ov-h"><h2 id="rc-h">招募流程（履歷收件）</h2></header>
+    <p class="muted">104 應徵履歷由 hr@ 的「履歷篩選」程式每 5 分鐘撈 hr@ 信箱、直接送進看板，看板用「職缺條件」的關鍵字規則評分、分級，出現在「招募」頁的「履歷篩選」。邀約、不邀約、面試、錄取、Offer、報到都在看板操作（104 訊息由 104 小幫手送出）。</p>
+    <p>${esc(intake)}</p>
+    ${stale ? '<p class="imp-msg err">hr@ 的履歷篩選程式超過 30 分鐘沒有送履歷來：請用 hr@ 打開「履歷篩選」試算表的 Apps Script，看「觸發條件」裡的 runFiveMinuteScreening 和「執行項目」有沒有失敗。</p>' : ''}
+    <h3 class="fm-h">舊「履歷篩選」試算表</h3>
+    <p class="muted">${esc(sheet)}</p>
+    ${RC.missing.length && RC.configured ? `<p class="imp-msg">試算表裡找不到這些工作表，對應的欄位會是空的：${esc(RC.missing.join('、'))}</p>` : ''}
+    ${RC.lastError && RC.configured ? `<p class="imp-msg err">上次同步失敗：${esc(RC.lastError)}</p>` : ''}
+    ${RC.configured ? '' : `<details class="rc-relink"><summary>重新連結舊試算表</summary><p class="muted">要先用擁有試算表的帳號，把試算表共用給 <b>${esc(RC.shareTo || FS.shareTo || '管理員的 Gmail')}</b>（檢視者）。</p>${linkRow}</details>`}
     ${RC.msg ? `<p class="imp-msg${RC.msgErr ? ' err' : ''}" role="status">${esc(RC.msg)}</p>` : ''}
-    ${RC.configured ? `<div class="fl-row">${RC.confirmUnlink
-      ? '<span class="confirm-q" style="width:auto">確定取消連結？「招募」頁前三欄會清空，試算表不受影響。</span><button class="btn sm danger-solid" type="button" data-u="rc-unlink-yes">取消連結</button><button class="btn sm ghost" type="button" data-u="rc-cancel">不要</button>'
-      : `<button class="btn sm" type="button" data-u="rc-sync"${RC.busy ? ' disabled' : ''}>立即同步</button><button class="btn sm ghost danger" type="button" data-u="rc-unlink">取消連結</button>`}</div>` : ''}
+    ${btns ? `<div class="fl-row">${btns}</div>` : ''}
   </section>`;
 }
 async function recruitAdmin(action, payload, okMsg){
@@ -1890,7 +1902,7 @@ async function recruitAdmin(action, payload, okMsg){
     const j = await AU.api(action, payload || {});
     if (action === 'formSync') { applyFormStatus(j); } else applyRecruitStatus(j);
     const st = action === 'formSync' ? j.rc : j;
-    RC.draft = null; RC.confirmUnlink = false;
+    RC.draft = null; RC.confirmUnlink = false; RC.confirmFreeze = false;
     RC.msg = okMsg(st || {}); RC.msgErr = !!(st && st.lastError);
     ST.syncNow();
   } catch (e) { RC.msg = e.message; RC.msgErr = true; }
@@ -2041,7 +2053,7 @@ function extHTML(h){
     + (iv ? row('邀約', [iv.plat, iv.st].filter(Boolean).join('・')) + row('104 事件進度', iv.ev) + row('面試時間', iv.ivD ? `${slash(iv.ivD)} ${iv.ivT}` : '') + row('人事資料表', [iv.formSt && '表單' + iv.formSt, iv.formFill].filter(Boolean).join('・')) : '')
     + (rs ? row('面試結果', rs.res) + row('二面', rs.iv2) + row('錄取決策', rs.dec) + row('104 通知', rs.n104) + row('Offer', rs.offer)
       + row('預計報到', rs.start ? slash(rs.start) : rs.startRaw) + row('報到安排', [rs.dept, rs.title, rs.time, rs.place, rs.boss && '主管 ' + rs.boss].filter(Boolean).join('・')) + row('備註', rs.note) : '');
-  return `<section class="sec"><h3>招募進度 <span class="h-count">「履歷篩選」試算表・只能看</span></h3>
+  return `<section class="sec"><h3>招募紀錄 <span class="h-count">履歷收件與舊試算表・只能看</span></h3>
     ${body ? `<dl class="fd">${body}</dl>` : ''}${links ? `<p class="ext-links">${links}</p>` : ''}</section>`;
 }
 function slotHTML(h, s, canUp){
@@ -2555,7 +2567,9 @@ $('#users-view').addEventListener('click', e => {
   else if (act === 'rc-sync') recruitAdmin('formSync', {force:true}, j => j.lastError ? '同步失敗，原因見上方。' : j.changed ? '已同步，有新的變動。' : '已同步，試算表沒有新的變動。');
   else if (act === 'rc-unlink') { RC.confirmUnlink = true; renderUsers(); }
   else if (act === 'rc-unlink-yes') recruitAdmin('recruitUnlink', {}, () => '已取消連結。');
-  else if (act === 'rc-cancel') { RC.confirmUnlink = false; renderUsers(); }
+  else if (act === 'rc-freeze') { RC.confirmFreeze = true; RC.confirmUnlink = false; renderUsers(); }
+  else if (act === 'rc-freeze-yes') recruitAdmin('recruitFreeze', {}, () => '已停用舊試算表，之前讀到的資料都還在。之後履歷由看板自己收，邀約、面試都在看板操作。');
+  else if (act === 'rc-cancel') { RC.confirmUnlink = false; RC.confirmFreeze = false; renderUsers(); }
   else if (act === 'mc-link') {
     const url = $('#mc-url').value.trim();
     MC.draft = url;
