@@ -1871,6 +1871,7 @@ async function formSync(force){
     if (j.added) { toast(`人事資料表有 ${j.added} 筆新資料，已加入「面試」`); ST.syncNow(); }
     else if (j.updated || (j.rc && j.rc.changed) || (j.mc && j.mc.changed)) ST.syncNow();
     if (S.view === 'users') renderUsers();
+    else if (S.view === 'recruit') { renderToolbar(); renderChat(); }   // 小幫手狀態、聊聊檢查時間跟著更新
   } catch (e) { /* 同步失敗不打擾使用者，下次再試 */ }
 }
 async function loadFormStatus(){
