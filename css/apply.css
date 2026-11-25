@@ -95,3 +95,24 @@ h1,h2,h3{text-wrap:balance;margin:0}
 .ap-foot{font-size:12.5px;color:var(--ink-3);padding-block:20px 32px}
 .ap-foot a{color:inherit}
 @media (max-width:560px){ .ap-fields{grid-template-columns:1fr} .ap-sec{padding:16px 14px 18px} .ap-btn{flex:1 1 100%} }
+
+/* 報到資料（onboard.html） */
+.ob-info{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin-top:12px;font-size:15.5px}
+.ob-k{color:var(--ink-3)}
+.ob-v{font-weight:700}
+.ob-note{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:var(--col);font-size:14.5px;white-space:pre-line}
+.ob-slots{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:12px}
+.ob-slot{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--surface)}
+.ob-slot.done{border-color:var(--control)}
+.ob-slot-h{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.ob-slot-h b{font-size:16px}
+.ob-opt{font-size:12.5px;color:var(--ink-3)}
+.ob-st{margin-left:auto;font-size:14px;color:var(--ink-3)}
+.ob-slot.done .ob-st{color:var(--accent);font-weight:700}
+.ob-slot .ap-hint{margin:4px 0 0}
+.ob-btns{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.ap-btn.ob-b{font-size:16px;padding:10px 20px}
+.ob-b2{border:1px solid var(--control);border-radius:12px;background:var(--surface);font-weight:700;font-size:16px;padding:9px 18px;cursor:pointer;color:var(--accent)}
+.ob-b2:disabled{opacity:.5;cursor:not-allowed}
+.ob-msg{margin:14px 0 0;padding:10px 14px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:700}
+.ob-exp{font-size:13.5px}

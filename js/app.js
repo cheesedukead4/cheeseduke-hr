@@ -81,10 +81,13 @@ const EMPTY = {
   done:'這個月還沒有人完成加保'
 };
 const RC_DAYS = {screen:14, invite:21, booked:3, cancel:30, match:45};   // 招募三欄顯示的天數、對人時日期相差幾天內算同一人
-const DOC_SLOTS = [
+const DOC_SLOTS = [   // 和雲端後端 ONB_SLOTS_（報到連結上傳）一樣
   {key:'id_front', label:'身分證／居留證 正面', required:true},
   {key:'id_back',  label:'身分證／居留證 反面', required:true},
-  {key:'bank',     label:'存摺封面', required:false}
+  {key:'bank',     label:'存摺封面', required:true},
+  {key:'photo',    label:'大頭照', required:true},
+  {key:'health',   label:'體檢／健康證明', required:true},
+  {key:'cert',     label:'畢業證書／專業證照', required:false}
 ];
 const ALLOWED = ['image/jpeg','image/png','image/webp','application/pdf'];
 const RATING = {A:'優秀', B:'良好', C:'尚可', D:'不適合'};
@@ -182,7 +185,7 @@ function norm(id, d){
     ivAt: typeof d.ivAt === 'number' ? d.ivAt : null, ivBy:str(d.ivBy),
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
-    crit: normCrit(d.crit)
+    crit: normCrit(d.crit), onb: normOnb(d.onb)
   };
 }
 function normForm(f){
@@ -329,6 +332,7 @@ function normCfg(d){
   d = obj(d);
   const s = (v, n, dft) => typeof v === 'string' ? v.slice(0, n) : dft;
   return {company:s(d.company, 40, '起士公爵'), place:s(d.place, 120, ''), contactName:s(d.contactName, 40, ''), contactPhone:s(d.contactPhone, 40, ''),
+    reportTime:s(d.reportTime, 20, '09:00'), reportPlace:s(d.reportPlace, 120, ''), reportNote:s(d.reportNote, 300, ''),
     replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3};
 }
 /** 寄件匣用來對人的鍵：104 履歷連結（沒有就用試算表那一列的 id） */
@@ -414,6 +418,50 @@ function renderChat(){
   const show = curBoard() === 'recruit' && S.loaded && (RN.configured || S.chat.items.length > 0);
   el.hidden = !show;
   if (show) el.innerHTML = chatPanelHTML();
+}
+/* ---------- 報到連結：新人自己用手機上傳報到文件（onboard.html#t=代碼；104 小幫手用聊聊送連結）---------- */
+const ONB_DAYS = 14;
+function normOnb(d){
+  d = obj(d);
+  if (!/^[a-f0-9]{32}$/.test(d.t || '')) return null;
+  const i = obj(d.info), s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  return {t:d.t, exp: Number(d.exp) || 0, at: Number(d.at) || 0, by:s(d.by, 40), n: Number(d.n) || 0, last: Number(d.last) || 0,
+    info:{date:s(i.date, 10), time:s(i.time, 20), place:s(i.place, 120), note:s(i.note, 500)}};
+}
+const onbLive = h => !!(h && h.onb && h.onb.exp > Date.now());
+const onbLink = h => h && h.onb ? `${ONBOARD_URL}#t=${h.onb.t}` : '';
+function onbToken(){ const a = new Uint8Array(16); crypto.getRandomValues(a); return [...a].map(b => b.toString(16).padStart(2, '0')).join(''); }
+/** 沒有連結、過期或要換新 → 產生新的代碼（舊代碼馬上失效）；報到日期用看板上的預計報到日，時間、地點、提醒用管理頁的預設值 */
+function onbEnsure(id, fresh){
+  const h = S.hires.get(id); if (!h || !canEdit()) return null;
+  if (onbLive(h) && !fresh) return h;
+  const info = {date: planStart(h) || '', time: S.cfg.reportTime, place: S.cfg.reportPlace || S.cfg.place, note: S.cfg.reportNote};
+  if (!saveHire(id, r => { r.onb = {t: onbToken(), exp: Date.now() + ONB_DAYS * 86400000, info, at: Date.now(), by: myName()}; })) return null;
+  pullFromStore();
+  return S.hires.get(id);
+}
+function onbText(h){
+  const i = h.onb.info;
+  const when = [i.date ? slash(i.date) : '日期另行通知', i.time].filter(Boolean).join(' ');
+  return `${h.name}您好，歡迎加入起士公爵！\n\n【報到資訊】\n▸ 報到時間：${when}\n▸ 報到地點：${i.place || '另行通知'}${i.note ? `\n▸ 提醒：${i.note}` : ''}\n\n`
+    + `請在報到前用手機打開下面的連結，上傳報到需要的文件（身分證正反面、存摺封面、大頭照、體檢／健康證明、畢業證書或專業證照），報到當天就不用再準備影本：\n${onbLink(h)}\n\n`
+    + `連結 ${ONB_DAYS} 天內有效，只限您本人使用。有任何問題，歡迎直接在這裡回覆我們。`;
+}
+function onbHTML(h){
+  if (['interview', 'rejected', 'declined', 'done'].includes(h.stage)) return '';
+  const c = docCount(h), live = onbLive(h), ch = chatFor({name:h.name, job:h.position});
+  const day = ts => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()}`; };
+  const status = !h.onb ? '還沒傳報到連結。錄取、確定要來之後，按下面的按鈕把報到資訊和上傳連結傳給新人。'
+    : !live ? `報到連結已經過期（${day(h.onb.exp)}），要再傳請按「換新連結」。`
+    : `報到連結 ${fmtTime(h.onb.at)} 產生、${day(h.onb.exp)} 前有效${h.onb.last ? `・新人最後上傳 ${fmtTime(h.onb.last)}` : '・新人還沒上傳'}`;
+  const btns = !canEdit() ? [] : [
+    ch ? `<button class="btn sm primary" type="button" data-act="onb-send">${h.onb && live ? '再傳一次（104 聊聊）' : '傳報到連結（104 聊聊）'}</button>` : '',
+    `<button class="btn sm" type="button" data-act="onb-copy">複製報到訊息</button>`,
+    h.onb ? `<button class="btn sm ghost" type="button" data-act="onb-new">換新連結</button>` : ''].filter(Boolean);
+  return `<section class="sec"><h3>報到連結 <span class="h-count">必要文件 ${c.have}/${c.need}</span></h3>
+    <p class="muted">${esc(status)}</p>
+    ${canEdit() && !ch ? '<p class="note">找不到這位在 104 聊聊的對話：請按「複製報到訊息」，用 LINE 或簡訊傳給新人。</p>' : ''}
+    ${btns.length ? `<div class="fl-row">${btns.join('')}</div>` : ''}</section>`;
 }
 function rowById(id){
   if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
@@ -1009,6 +1057,7 @@ function renderBoard(){
  * 系統自動產生未來幾天的時段（id 'w日期T時間'）；某個時段不要了就「關閉」（存一筆同 id、closed 的紀錄蓋過去）。
  * 另外也可以加開單次時段（隨機 id，照舊）。產生規則和雲端後端 Code.gs 的 slotExpand_ 相同，改一邊要改另一邊。 */
 const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
+const ONBOARD_URL = new URL('onboard.html', location.href).href.replace(/[?#].*$/, '');
 const SL = {confirm:null, msg:'', msgErr:false, wk:null, dirty:false, copyFrom:null};
 const WD_ = '日一二三四五六';
 const SL_DURS = [15, 20, 30, 45, 60, 90, 120];
@@ -1586,7 +1635,7 @@ const OBM = {row:null, type:'invite', mode:'send', tplId:'', err:'', guide:null}
 const tplOf = kind => S.tpl.filter(t => t.kind === kind);
 function openOb(type, row){
   if (!canEdit() || !row) return;
-  OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = ''; OBM.guide = null;
+  OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = ''; OBM.guide = null; OBM.preset = row.preset || '';
   const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
   OBM.tplId = type === 'message' || type === 'chat' ? '' : list[0] ? list[0].id : '';
   renderOb(true);
@@ -1606,7 +1655,7 @@ function renderOb(fresh){
   const v = (id, dft) => keep[id] != null ? keep[id] : dft;
   const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
   const opts = (type === 'message' || type === 'chat' ? '<option value="">（空白）</option>' : '') + list.map(t => `<option value="${esc(t.id)}"${t.id === OBM.tplId ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
-  const text = v('ob-text', fresh ? fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job)) : '');
+  const text = v('ob-text', fresh ? (OBM.preset || fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job))) : '');
   const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息', chat:'104 聊聊'}[type];
   $('#ob-title').textContent = `${title}・${r.name}`;
   const warn = !RN.configured ? '還沒有設定 104 小幫手（管理頁），排入後要等小幫手設定好才會送出；也可以按「複製並打開 104」自己送。'
@@ -1756,6 +1805,8 @@ function obAdminHTML(){
     ${RK.msg ? `<p class="imp-msg" role="status">${esc(RK.msg)}</p>` : ''}
     <h3 class="fm-h">邀約預設值</h3>
     <div class="grid2">${q('cfg-company', '公司名稱', c.company, 'maxlength="40"')}${q('cfg-place', '面試地點', c.place, 'maxlength="120"')}${q('cfg-cname', '聯絡窗口', c.contactName, 'maxlength="40"')}${q('cfg-cphone', '聯絡電話', c.contactPhone, 'maxlength="40"')}${q('cfg-days', '回覆期限（天內）', String(c.replyDays), 'type="number" min="1" max="14"')}</div>
+    <h3 class="fm-h">報到預設值 <span class="h-count">「傳報到連結」會帶入</span></h3>
+    <div class="grid2">${q('cfg-rtime', '報到時間', c.reportTime, 'maxlength="20" placeholder="例如：09:00"')}${q('cfg-rplace', '報到地點（空白＝面試地點）', c.reportPlace, 'maxlength="120"')}${q('cfg-rnote', '報到提醒', c.reportNote, 'maxlength="300" placeholder="例如：請攜帶印章、穿著輕便服裝"')}</div>
     <h3 class="fm-h">訊息範本 <button class="btn sm" type="button" data-u="te-add">＋ 新增範本</button></h3>
     ${tpls || '<p class="rt-empty">還沒有範本。</p>'}
     ${TE.msg ? `<p class="imp-msg" role="status">${esc(TE.msg)}</p>` : ''}
@@ -1772,7 +1823,7 @@ function saveCfg(){
   const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const cur = ST.get('tpl', '_cfg');
   const next = Object.assign(cur ? JSON.parse(JSON.stringify(cur)) : {id:'_cfg'}, {company:g('cfg-company') || '起士公爵', place:g('cfg-place'), contactName:g('cfg-cname'), contactPhone:g('cfg-cphone'),
-    replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), updatedAt:Date.now(), updatedBy:myName()});
+    replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), reportTime:g('cfg-rtime'), reportPlace:g('cfg-rplace'), reportNote:g('cfg-rnote'), updatedAt:Date.now(), updatedBy:myName()});
   ST.save('tpl', next);
 }
 
@@ -2097,8 +2148,8 @@ function refreshDrawer(){
   $('#d-form').innerHTML = h.form ? formDataHTML(h) : '';
   $('#iv-meta').textContent = h.ivAt ? `最後更新 ${fmtTime(h.ivAt)}${h.ivBy ? '・' + h.ivBy : ''}` : '';
   const steps = stepsHTML(h), ext = extHTML(h);
-  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '';
-  $('#d-dyn').innerHTML = h.stage === 'docs' ? docs + steps + ext : steps + ext + docs;
+  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h);
+  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + docs + steps + ext : onb + steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
   const jb = $('#d-job'), af = jb.contains(document.activeElement) ? document.activeElement.id : '';
   jb.hidden = h.stage !== 'interview' || (!S.jobs.length && !isAdmin());
@@ -2559,6 +2610,9 @@ $('#drawer').addEventListener('click', e => {
     case 'photo-del-yes': deletePhoto(id, key); break;
     case 'rec-del': S.confirm = {type:'record'}; refreshDrawer(); break;
     case 'rec-del-yes': deleteRecord(id); break;
+    case 'onb-send': { const h1 = onbEnsure(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:onbText(h1)}); else if (h1) toast('找不到 104 聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
+    case 'onb-copy': { const h1 = onbEnsure(id); if (h1) { copyText(onbText(h1)); toast('已複製報到訊息，貼到 LINE 或簡訊傳給新人'); } refreshDrawer(); break; }
+    case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
     case 'cancel': S.confirm = null; refreshDrawer(); break;
     case 'toggle-id': S.showId = !S.showId; refreshDrawer(); break;
   }

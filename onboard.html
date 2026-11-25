@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>起士公爵｜報到資料</title>
+<meta name="description" content="起士公爵新進同仁報到資訊與報到文件上傳。">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#0F3F25">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
+<link rel="stylesheet" href="css/apply.css">
+<script src="config.js"></script>
+<script src="js/onboard.js" defer></script>
+</head>
+<body>
+<header class="ap-top">
+  <div class="ap-wrap ap-top-in">
+    <img src="icons/icon.svg" alt="" width="40" height="40">
+    <div><b>起士公爵</b><span>新進同仁報到資料</span></div>
+  </div>
+</header>
+<main class="ap-wrap" id="ob">
+  <p class="ap-loading">讀取報到資料…</p>
+</main>
+<input type="file" id="ob-file" accept="image/*,application/pdf" hidden>
+<input type="file" id="ob-cam" accept="image/*" capture="environment" hidden>
+<footer class="ap-wrap ap-foot">
+  <p>您上傳的文件僅供起士公爵辦理到職、薪資轉帳與勞健保等人事作業使用，只有人資可以查看。這個連結是您個人專用，請不要轉傳給別人。<a href="privacy.html" target="_blank" rel="noopener">隱私權政策</a></p>
+</footer>
+</body>
+</html>
