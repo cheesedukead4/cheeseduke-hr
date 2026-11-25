@@ -442,7 +442,7 @@ function onbEnsure(id, fresh){
 }
 function onbText(h){
   const i = h.onb.info;
-  const when = [i.date ? slash(i.date) : '日期另行通知', i.time].filter(Boolean).join(' ');
+  const when = i.date ? [slash(i.date), i.time].filter(Boolean).join(' ') : `日期另行通知${i.time ? `（當天 ${i.time}）` : ''}`;
   return `${h.name}您好，歡迎加入起士公爵！\n\n【報到資訊】\n▸ 報到時間：${when}\n▸ 報到地點：${i.place || '另行通知'}${i.note ? `\n▸ 提醒：${i.note}` : ''}\n\n`
     + `請在報到前用手機打開下面的連結，上傳報到需要的文件（身分證正反面、存摺封面、大頭照、體檢／健康證明、畢業證書或專業證照），報到當天就不用再準備影本：\n${onbLink(h)}\n\n`
     + `連結 ${ONB_DAYS} 天內有效，只限您本人使用。有任何問題，歡迎直接在這裡回覆我們。`;
@@ -2859,8 +2859,15 @@ $('#imp-preview').addEventListener('change', e => {
 $('#imp-go').addEventListener('click', runImport);
 
 /* ================= 啟動 ================= */
-ST.on(type => {
-  if (type === 'change') { pullFromStore(); schedule(); }
+/** 雲端有新資料（同事修改、新人用報到連結上傳文件）：打開中的詳細資料跟著更新；正在詳細資料裡打字時先不重畫 */
+function refreshDrawerRemote(){
+  if ($('#drawer').hidden || !S.openId || S.creating) return;
+  const a = document.activeElement;
+  if (a && a.closest && a.closest('#d-dyn, #d-foot, #d-job') && a.matches('textarea, select, input:not([type="checkbox"]):not([type="radio"])')) return;
+  refreshDrawer();
+}
+ST.on((type, p) => {
+  if (type === 'change') { pullFromStore(); schedule(); if (p && !p.local && (p.keys || []).includes('hires')) refreshDrawerRemote(); }
   else if (type === 'status') { renderSync(); const l = !!ST.status().loaded; if (l !== S.loaded) { pullFromStore(); schedule(); } }
   else if (type === 'conflict') toast('有同事同時修改了同一筆資料，已自動合併；同一個欄位以你的修改為準。');
 });
