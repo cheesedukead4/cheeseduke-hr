@@ -288,7 +288,7 @@ function extItems(key, useQ = true){
   const vis = r => !q || [r.name, r.job].some(x => x.toLowerCase().includes(q));
   if (key === 'x_screen' || key === 'x_pause') {
     const floor = addDays(t, -RC_DAYS.screen);
-    return R.screen.filter(r => (key === 'x_pause') === (r.tier === '不推薦') && rowDay(r) >= floor && !screenTaken(r) && !obDecided(obFor(refOf(r))) && vis(r))
+    return R.screen.filter(r => (key === 'x_pause') === (r.tier === '不推薦') && rowDay(r) >= floor && !screenTaken(r) && !obDecidedRef(refOf(r)) && vis(r))
       .sort((a, b) => (TIER_RANK[a.tier] ?? 3) - (TIER_RANK[b.tier] ?? 3) || (b.score ?? -1) - (a.score ?? -1) || (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_invite') {
@@ -327,7 +327,7 @@ function obFixFromChat(){
     const ch = chatFor({name:o.to.name, job:o.to.job});
     if (!ch || ![1, 2].includes(ch.ev)) continue;
     const t = Date.parse(String(ch.time).replace(' ', 'T') + '+08:00');
-    if (!(t >= (o.createdAt || 0) - 60000)) continue;
+    if (!(t >= (o.createdAt || 0) - 3 * 3600000)) continue;   // 各台電腦的時鐘可能不準，放寬到 3 小時
     const raw = ST.get('outbox', o.id);
     if (!raw || raw.status !== 'failed') continue;
     fix.push(Object.assign({}, raw, {status:'sent', sentAt: t, result:'104 聊聊看得到這次的邀約（' + chatEv(ch) + '），已改成「已送出」', updatedAt: Date.now(), updatedBy: myName()}));
@@ -365,6 +365,8 @@ const refOf = r => r.ob ? r.ob.to.ref : (r.cv || ('row:' + r.id));
 function obFor(ref){ let best = null; for (const o of S.outbox) if (o.to.ref === ref && (!best || o.createdAt > best.createdAt)) best = o; return best; }
 /** 已經決定邀約或不邀約（排隊中、送出中、已送出，或只標記不邀約） */
 const obDecided = o => !!o && (o.type === 'skip' || ((o.type === 'invite' || o.type === 'thanks') && ['queued', 'sending', 'sent'].includes(o.status)));
+/** 這個人曾經被邀約、寄過感謝函或標記不邀約（最新一筆可能是之後的聊聊，所以要看全部） */
+const obDecidedRef = ref => S.outbox.some(o => o.to.ref === ref && obDecided(o));
 const rnOnline = () => !!RN.lastSeen && Date.now() - RN.lastSeen < 5 * 60000;
 function obChip(o){
   if (!o) return '';
@@ -1168,7 +1170,7 @@ function colExtraHTML(key, mNum){
   if (key === 'confirm') { const dec = declinedItems(); return foldHTML('dec', `婉拒入職・${mNum} 月 ${dec.length} 位`, dec.map(hireLi)); }
   if (key === 'x_screen' && R.meta) {
     const p = extItems('x_pause');
-    const nd = R.screen.filter(r => { const o = obFor(refOf(r)); return o && (o.type === 'skip' || o.type === 'thanks') && obDecided(o); });
+    const nd = R.screen.filter(r => { const ref = refOf(r), o = obFor(ref); return o && (o.type === 'skip' || o.type === 'thanks') && obDecided(o) && !S.outbox.some(x => x.to.ref === ref && x.type === 'invite' && obDecided(x)); });
     return foldCardsHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extCardHTML(r, 'x_screen')))
       + foldHTML('noinv', `已決定不邀約・${nd.length} 位`, nd.map(r => extLi(r, obFor(refOf(r)).type === 'skip' ? '只標記不邀約' : '感謝函' + ({queued:'排隊中', sending:'送出中', sent:'已送出'}[obFor(refOf(r)).status] || ''))));
   }
