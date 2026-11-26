@@ -364,7 +364,7 @@ function normCfg(d){
     replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3,
     autoYes: d.autoYes !== false, autoNo: d.autoNo !== false, autoRemind: d.autoRemind !== false};
 }
-/* 應徵者回覆邀約（104 詢問意願的按鈕）後的自動回覆：雲端後端在小幫手送來聊聊清單時排進寄件匣，範本在「訊息範本」修改 */
+/* 應徵者回覆邀約（邀約連結的按鈕；以前 104 詢問意願的按鈕也算）後的自動回覆：雲端後端在小幫手送來聊聊清單時排進寄件匣，範本在「訊息範本」修改 */
 const REPLY_TPLS = [{id:'tpl-reply-yes', kind:'message', title:'有興趣後的回覆（自動）', text:"{{姓名}}您好，謝謝您回覆有興趣！\n\n請點下面的連結，選擇方便的面試時段並填寫基本資料：\n{{應徵連結}}\n\n▸ 面試地點：{{面試地點}}\n若時段都無法配合，歡迎直接在這裡回覆方便的時間，我們會協助安排。\n\n{{公司名稱}} 人資"},
   {id:'tpl-iv-remind', kind:'message', title:'面試前一天提醒（自動）', text:"{{姓名}}您好，提醒您明天 {{面試日期}} {{面試時間}} 在{{面試地點}}面試。\n\n請點下面的連結告訴我們：會準時到、要改時間，或不方便來了：\n{{回覆連結}}\n\n期待與您見面！\n{{公司名稱}} 人資"},
   {id:'tpl-thanks-decline', kind:'thanks', title:'婉拒邀約後的感謝函（自動）', text:"您好：\n感謝您撥冗回覆，也謝謝您對{{公司名稱}}「{{職缺}}」職缺的關注。\n我們尊重您的決定，也會妥善保留您的資料；未來若有更合適的機會，期待能再與您聯繫。\n祝 順心"}];
@@ -417,7 +417,7 @@ function normChat(d){
     evs: Number.isFinite(Number(d.evs)) && d.evs !== null && d.evs !== '' ? Number(d.evs) : -1};
 }
 /* 104 聊聊的事件進度（104 網頁的對照：eventType 1 面試邀約、2 詢問意願、4 感謝函、5 到職日期提醒；eventStatus 1 同意、2 婉拒、3 未回覆、4／5 過期或取消）
-   看板的「邀約」用 104「詢問意願」：應徵者按「我有興趣」＝有意願、按「婉拒」＝無意願 */
+   看板的「邀約」2026-11-27 起改用 104 聊聊文字＋邀約連結；以前用 104「詢問意願」送的：按「我有興趣」＝有意願、按「婉拒」＝無意願 */
 const EV_NAMES = {1:{1:'面試同意', 2:'面試婉拒', 3:'面試未回覆', 4:'面試取消', 5:'面試取消'}, 2:{1:'有意願', 2:'無意願', 3:'意願未回覆', 4:'意願已過期', 5:'意願已取消'},
   5:{1:'到職日期提醒同意', 2:'到職日期提醒婉拒', 3:'到職日期提醒未回覆', 4:'到職日期提醒取消', 5:'到職日期提醒取消'}};
 const chatEv = c => !c ? '' : c.ev === 4 ? '感謝函' : (EV_NAMES[c.ev] || {})[c.evs] || '';
@@ -1876,15 +1876,13 @@ function renderOb(fresh){
     ${send ? `
     <div class="grid2">
       <div class="f"><label for="ob-tpl">範本</label><select class="inp" id="ob-tpl">${opts}</select></div>
-      ${type === 'chat' ? '' : `<div class="f"><label for="ob-job">104 通知職務</label><input id="ob-job" value="${esc(v('ob-job', r.job || ''))}" maxlength="80"></div>`}
+      ${type === 'chat' ? '' : `<div class="f"><label for="ob-job">職缺</label><input id="ob-job" value="${esc(v('ob-job', r.job || ''))}" maxlength="80"></div>`}
       <div class="f full"><label for="ob-text">內容 <span class="h-count" id="ob-count">${text.length}/1000</span></label><textarea id="ob-text" rows="11" maxlength="1000">${esc(text)}</textarea></div>
       ${type === 'invite' ? `
       <div class="f"><label for="ob-place">面試地點</label><input id="ob-place" value="${esc(v('ob-place', S.cfg.place))}" maxlength="120"></div>
-      <div class="f"><label for="ob-days">回覆期限（天內）</label><input id="ob-days" type="number" min="1" max="14" value="${esc(v('ob-days', String(S.cfg.replyDays)))}"></div>
-      <div class="f"><label for="ob-cname">聯絡窗口</label><input id="ob-cname" value="${esc(v('ob-cname', S.cfg.contactName))}" maxlength="40"></div>
-      <div class="f"><label for="ob-cphone">聯絡電話</label><input id="ob-cphone" value="${esc(v('ob-cphone', S.cfg.contactPhone))}" maxlength="40"></div>` : ''}
+` : ''}
     </div>
-    <p class="note">${type === 'chat' ? '「排入送出」：104 小幫手約 1 分鐘內在 104 聊聊送出這段文字（那則對話在 104 會變成已讀）。' : ''}「排入送出」：104 小幫手約 1 分鐘內在 104 自動送出，還沒送出前可以在卡片上按「取消送出」。「複製並打開 104」：內容先複製好、打開這位應徵者的 104 履歷，你在 104 貼上、按確認（任何電腦都能用）。內容裡還留著 {{…}} 的地方請先改好。</p>`
+    <p class="note">${type === 'chat' ? '「排入送出」：104 小幫手約 1 分鐘內在 104 聊聊送出這段文字（那則對話在 104 會變成已讀）。' : type === 'invite' ? '邀約用 104 聊聊傳這段文字，不會出現 104 的「有意願／無意願」按鈕；應徵者按訊息裡的連結回覆有興趣或婉拒（內容沒有連結會自動補上）。' : ''}「排入送出」：104 小幫手約 1 分鐘內在 104 自動送出，還沒送出前可以在卡片上按「取消送出」。「複製並打開 104」：內容先複製好、打開這位應徵者的 104 履歷，你在 104 貼上、按確認（任何電腦都能用）。內容裡還留著 {{…}} 的地方請先改好。</p>`
     : '<p class="note">只在看板上記下「不邀約」，不會傳任何訊息給應徵者。</p>'}
     ${send && warn ? `<p class="imp-msg">${esc(warn)}</p>` : ''}
     ${OBM.err ? `<p class="imp-msg err" role="alert">${esc(OBM.err)}</p>` : ''}
@@ -1897,10 +1895,12 @@ function sendOb(manual){
   const obId = rid('ob');
   // 訊息裡的線上應徵連結加上這次的代碼（apply.html?i=…）：應徵者填完資料，看板就知道是 104 上的哪一位
   // 邀約：連結換成邀約回覆頁（有興趣／婉拒的按鈕）；其他訊息：線上應徵連結帶代碼
-  const text = type === 'skip' ? '' : !r.cv ? val('ob-text') : type === 'invite'
+  let text = type === 'skip' ? '' : !r.cv ? val('ob-text') : type === 'invite'
     ? val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '\u0000' + part : part).join(APPLY_URL).split(APPLY_URL + '\u0000').join(INVITE_URL + '?i=' + obId)
     : val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '?i=' + obId + part : part).join(APPLY_URL), job = val('ob-job') || r.job || '';
-  const room = type === 'chat' && r.chat ? {id:r.chat.id, jobNo:r.chat.jobNo, pId:r.chat.pId} : null;
+  // 邀約改用 104 聊聊送（沒有 104 的有意願／無意願按鈕）：應徵者要靠訊息裡的連結回覆，範本沒放連結就補在最後
+  if (type === 'invite' && r.cv && text && !text.includes(INVITE_URL)) text += `\n\n請點下面的連結，告訴我們有沒有興趣：\n${INVITE_URL}?i=${obId}`;
+  const room = ['chat', 'invite', 'message'].includes(type) && r.chat ? {id:r.chat.id, jobNo:r.chat.jobNo, pId:r.chat.pId} : null;
   const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
     : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : type === 'chat' && !room ? '找不到這位應徵者的 104 聊聊對話。' : '';
   if (!err && manual && !is104(r.cv)) { OBM.err = '這位應徵者沒有 104 履歷連結，不能在 104 送出。'; renderOb(false); return; }
@@ -1920,7 +1920,7 @@ function sendOb(manual){
 }
 /** 半自動：內容複製到剪貼簿、打開這位應徵者的 104 應徵履歷，使用者自己在 104 貼上按確認 */
 const is104 = u => /^https:\/\/vip\.104\.com\.tw\//.test(u || '');
-const MANUAL_HOW = {invite:'在 104 按【邀約】→【詢問意願】', thanks:'在 104 按【感謝函】', message:'在 104 按【邀約】→【詢問意願】', chat:'在 104 打開右下角【聊聊】，找到這位應徵者的對話'};
+const MANUAL_HOW = {invite:'在 104 應徵履歷按【聊聊】，貼上後送出', thanks:'在 104 按【感謝函】', message:'在 104 應徵履歷按【聊聊】，貼上後送出', chat:'在 104 打開右下角【聊聊】，找到這位應徵者的對話'};
 function copyText(text){
   const ta = document.createElement('textarea');
   ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0';
@@ -2018,8 +2018,8 @@ function obAdminHTML(){
     <div class="grid2">${q('cfg-company', '公司名稱', c.company, 'maxlength="40"')}${q('cfg-place', '面試地點', c.place, 'maxlength="120"')}${q('cfg-cname', '聯絡窗口', c.contactName, 'maxlength="40"')}${q('cfg-cphone', '聯絡電話', c.contactPhone, 'maxlength="40"')}${q('cfg-days', '回覆期限（天內）', String(c.replyDays), 'type="number" min="1" max="14"')}</div>
     <h3 class="fm-h">報到預設值 <span class="h-count">「傳報到連結」會帶入</span></h3>
     <div class="grid2">${q('cfg-rtime', '報到時間', c.reportTime, 'maxlength="20" placeholder="例如：09:00"')}${q('cfg-rplace', '報到地點（空白＝面試地點）', c.reportPlace, 'maxlength="120"')}${q('cfg-rnote', '報到提醒', c.reportNote, 'maxlength="300" placeholder="例如：請攜帶印章、穿著輕便服裝"')}</div>
-    <h3 class="fm-h">應徵者回覆邀約後 <span class="h-count">104「詢問意願」的按鈕</span></h3>
-    <p class="muted">應徵者在 104 按了按鈕，104 小幫手約 1 分鐘內會讀到，看板照下面的設定自動處理（每次邀約只送一次）。要送的文字在下面「訊息範本」修改。</p>
+    <h3 class="fm-h">應徵者回覆邀約後 <span class="h-count">邀約連結的「有興趣／婉拒」</span></h3>
+    <p class="muted">邀約用 104 聊聊傳，應徵者按訊息裡的連結回覆；以前用 104「詢問意願」送的邀約，按 104 的按鈕也算（小幫手約 1 分鐘內讀到）。看板照下面的設定自動處理（每次邀約只送一次），要送的文字在下面「訊息範本」修改。</p>
     <label class="chk"><input type="checkbox" id="cfg-auto-yes" class="ob-cfg"${c.autoYes ? ' checked' : ''}> 按「我有興趣」：移到「已約面試」等選時段，並用 104 聊聊自動傳「有興趣後的回覆（自動）」</label>
     <label class="chk"><input type="checkbox" id="cfg-auto-no" class="ob-cfg"${c.autoNo ? ' checked' : ''}> 按「婉拒」：移到「婉拒或取消」，並自動送「婉拒邀約後的感謝函（自動）」（104 感謝函）</label>
     <label class="chk"><input type="checkbox" id="cfg-auto-remind" class="ob-cfg"${c.autoRemind ? ' checked' : ''}> 面試前一天 10 點後自動傳「面試前一天提醒（自動）」，附「會準時到／要改時間／不來了」按鈕</label>
