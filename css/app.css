@@ -155,6 +155,7 @@ img{max-width:100%}
 .stamp.lg{position:static;font-size:13px;padding:3px 6px 3px 8px}
 .rej{border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
 .rej summary{cursor:pointer;font-size:12.5px;color:var(--ink-2);padding:2px 4px}
+.rej .fold-cards{display:flex;flex-direction:column;gap:8px;margin:6px 0 0}
 .rej ul{list-style:none;margin:6px 0 0;padding:0 4px;display:flex;flex-direction:column;gap:4px}
 .rej li{display:flex;gap:8px;align-items:baseline;font-size:13px;min-width:0}
 .rej li span{color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

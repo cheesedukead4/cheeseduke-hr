@@ -1006,6 +1006,11 @@ function cardHTML(h){
   </article>`;
 }
 /** 欄位最下面可展開的清單（未錄取、婉拒入職、暫緩、應徵者取消） */
+/** 收合區裡放完整卡片（不推薦的人也要能邀約、不邀約） */
+function foldCardsHTML(key, summary, cards){
+  if (!cards.length) return '';
+  return `<details class="rej" data-fold="${key}"${S.open[key] ? ' open' : ''}><summary>${esc(summary)}</summary><div class="fold-cards">${cards.join('')}</div></details>`;
+}
 function foldHTML(key, summary, lis){
   if (!lis.length) return '';
   const open = S.open[key] || (key === 'rej' && batchOn());
@@ -1021,7 +1026,7 @@ function colExtraHTML(key, mNum){
   if (key === 'x_screen' && R.meta) {
     const p = extItems('x_pause');
     const nd = R.screen.filter(r => { const o = obFor(refOf(r)); return o && (o.type === 'skip' || o.type === 'thanks') && obDecided(o); });
-    return foldHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extLi(r, r.why || r.job)))
+    return foldCardsHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extCardHTML(r, 'x_screen')))
       + foldHTML('noinv', `已決定不邀約・${nd.length} 位`, nd.map(r => extLi(r, obFor(refOf(r)).type === 'skip' ? '只標記不邀約' : '感謝函' + ({queued:'排隊中', sending:'送出中', sent:'已送出'}[obFor(refOf(r)).status] || ''))));
   }
   if (key === 'x_booked' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `應徵者取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r))); }
