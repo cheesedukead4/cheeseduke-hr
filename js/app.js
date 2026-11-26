@@ -1,7 +1,8 @@
 /*
  * 人事工作看板｜全部畫面
  * ---------------------------------------------------------------
- * 頁面（網址 #overview #recruit #pipeline #routine #users）：總覽、招募、新進人員・勞健保、例行工作、管理（只有管理員）。
+ * 頁面（網址 #overview #recruit #pipeline #routine #manual #sched #users）：總覽、招募、新進人員・勞健保、例行工作、工作手冊、班表、管理（只有管理員）。
+ *   「班表」頁在 sched-board.js（window.HRSched），格子與工時檢查在 sched-core.js（部門填寫頁 sched.html 共用）。
  * 流程（白板）：Gmail 撈履歷 → AI 篩選 → 邀約（選時 → 人事表）→ 面試（錄／不錄）→ 確認入職（要／不要）→ Offer → 報到 → 證件 → APOLLO → 勞健保。
  *   「招募」頁前三欄（履歷篩選、邀約中、已約面試）是 hr@ 的「履歷篩選」試算表的進度：雲端後端每 10 分鐘讀一次存成 recruit，這裡只能看；
  *   應徵者的人事資料表進來（自動匯入或線上應徵）後才變成看板上的人（hires），從「面試」開始由 App 推進。
@@ -101,11 +102,12 @@ const FREQ_KEYS = FREQS.map(f => f.key);
 const PERMS = [
   {id:'edit',    label:'人事資料編輯', desc:'填寫評語、錄取與推進流程、面試時段、批次整理、上傳證件'},
   {id:'pii',     label:'查看證件',     desc:'看證件照片與完整身分證字號'},
-  {id:'routine', label:'例行工作設定', desc:'新增、修改、刪除每日／每週／每月項目（打勾不需要權限）'}
+  {id:'routine', label:'例行工作設定', desc:'新增、修改、刪除每日／每週／每月項目（打勾不需要權限）'},
+  {id:'sched',   label:'班表管理',     desc:'匯入員工名單、產生部門填寫連結、修改、鎖定與匯出班表（沒有這個權限只能看班表）'}
 ];
 const PERM_LABEL = Object.fromEntries(PERMS.map(p => [p.id, p.label]));
-const VIEWS = ['overview','recruit','pipeline','routine','manual','users'];
-const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', manual:'manual', users:'users'}; // 招募與新進人員共用同一個看板畫面
+const VIEWS = ['overview','recruit','pipeline','routine','manual','sched','users'];
+const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', manual:'manual', sched:'sched', users:'users'}; // 招募與新進人員共用同一個看板畫面
 
 /* 起士公爵人事資料表：回覆試算表的標題（去掉空白）→ 欄位，同名欄位依出現順序對應 */
 const COLS = {
@@ -991,7 +993,8 @@ function renderViews(){
     ['recruit', '招募', S.loaded ? `${inRecruit} 人` : ''],
     ['pipeline', '新進人員・勞健保', S.loaded ? `${inFlow} 人` : ''],
     ['routine', '例行工作', S.loaded && left ? `未完成 ${left}` : ''],
-    ['manual', '工作手冊', S.loaded && M.meta && remN ? `${remN} 項到期` : '']
+    ['manual', '工作手冊', S.loaded && M.meta && remN ? `${remN} 項到期` : ''],
+    ['sched', '班表', S.loaded && window.HRSched && HRSched.badge() ? `${HRSched.badge()} 部門待確認` : '']
   ];
   if (isAdmin()) tabs.push(['users', '管理', '']);
   $('#views').innerHTML = tabs.map(([k, t, b]) =>
@@ -1020,7 +1023,7 @@ function renderFoot(){
   $('#foot').innerHTML = `${me}<span>${n} 筆人事資料 · ${S.routines.size} 項例行工作</span>`;
 }
 function showView(){
-  for (const k of ['overview','pipeline','routine','manual','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
+  for (const k of ['overview','pipeline','routine','manual','sched','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
 }
 
 /* ================= 招募／新進人員・勞健保（同一個看板畫面，欄位不同） ================= */
@@ -2663,6 +2666,7 @@ function render(){
   else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderChat(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'manual') renderManual();
+  else if (S.view === 'sched' && window.HRSched) HRSched.render();
   else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed, .tpl-ed, .ob-cfg, #at-text'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
   if (S.imp && S.imp.rows.length) renderImportPreview();
@@ -3141,6 +3145,7 @@ ST.on((type, p) => {
   else if (type === 'conflict') toast('有同事同時修改了同一筆資料，已自動合併；同一個欄位以你的修改為準。');
 });
 AU.on(() => { U.list = null; schedule(); });
+if (window.HRSched) HRSched.init({toast: m => toast(m)});
 S.view = viewFromHash();
 pullFromStore(); render();
 AU.ready.then(() => { S.view = viewFromHash(); pullFromStore(); render(); formSync(); });

@@ -4,8 +4,8 @@ var CACHE = 'hr-app-v38';
 var NET_TIMEOUT_MS = 4000;
 var ASSETS = [
   './', './index.html', './config.js', './manifest.webmanifest',
-  './css/app.css',
-  './js/auth.js', './js/cloud-store.js', './js/app.js',
+  './css/app.css', './css/sched.css',
+  './js/auth.js', './js/cloud-store.js', './js/sched-core.js', './js/sched-board.js', './js/app.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
 ];
 
@@ -36,7 +36,7 @@ self.addEventListener('fetch', function (e) {
   if (url.origin !== self.location.origin) return;
   var nav = req.mode === 'navigate';
   if (url.search && !nav) return;
-  if (/\/(apply|onboard|reply|invite|ok)\.html$/.test(url.pathname) || /(apply|onboard|reply|invite|ok)\.(js|css)$/.test(url.pathname)) return; // 應徵頁、報到頁、錄取回覆頁、邀約回覆頁給應徵者和新人用，不經過 App 的離線快取
+  if (/\/(apply|onboard|reply|invite|ok|sched)\.html$/.test(url.pathname) || /(apply|onboard|reply|invite|ok|sched-page)\.(js|css)$/.test(url.pathname)) return; // 應徵頁、報到頁、錄取回覆頁、邀約回覆頁、部門班表頁給外部的人用，不經過 App 的離線快取
   if (nav && !/\/(index\.html)?$/.test(url.pathname)) return; // 其他頁面（隱私權政策等）也直接走網路
   e.respondWith(cachedFor(req, nav).then(function (hit) {
     var net = fetch(req, { cache: 'no-cache' }).then(function (res) {

@@ -11,6 +11,9 @@
  *      outbox          104 寄件匣：看板排入的邀約／感謝函／訊息，104 自動送出程式送出後回報狀態
  *      tpl             訊息範本與邀約預設值（_cfg）
  *      recruit         招募進度：雲端後端從「履歷篩選」試算表整理的，只能讀（READONLY，裝置不上傳也不重建）
+ *      staff           員工名單（班表用；從 Apollo 匯出貼進來）
+ *      depts           部門與班表填寫連結代碼，_cfg 是四週變形起算日
+ *      sched_YYYYMM    班表：一位員工一個月一筆＋月設定（_m）＋部門狀態（_d）；部門連結（sched.html）由雲端後端寫入同一檔
  *  - 每類有雲端版本號；上傳時帶「我是根據哪一版改的」，有人搶先更新就先下載，以單筆（id）為單位三方合併後再上傳
  *  - 同一筆的同一個欄位被兩個人改成不同值時，以這台裝置的修改為準，並通知畫面提示
  *  - 證件照片不經過這裡：直接上傳到雲端後端（photoUp），這裡只存檔案 id
@@ -23,9 +26,9 @@
   var STORE = 'kv';
   var POLL_MS = 30000;
   var PUSH_DELAY_MS = 800;
-  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件', manual: '工作清冊', outbox: '104 寄件匣', tpl: '訊息範本', chat: '104 聊聊' };
-  var MONTHLY = ['checks'];   // 依日期年月分檔的種類（資料要有 date 欄位）
-  var KEY_RE = /^(hires|routines|slots|recruit|jobs|manual|outbox|tpl|chat|checks_\d{6})$/;
+  var LABELS = { hires: '人事資料', routines: '例行工作項目', checks: '例行工作打勾', slots: '面試時段', recruit: '招募進度', jobs: '職缺條件', manual: '工作清冊', outbox: '104 寄件匣', tpl: '訊息範本', chat: '104 聊聊', staff: '員工名單', depts: '部門班表連結', sched: '班表' };
+  var MONTHLY = ['checks', 'sched'];   // 依日期年月分檔的種類（資料要有 date 欄位）
+  var KEY_RE = /^(hires|routines|slots|recruit|jobs|manual|outbox|tpl|chat|staff|depts|(checks|sched)_\d{6})$/;
   var READONLY = ['recruit', 'manual', 'chat'];   // 雲端後端寫的類別：只下載
 
   var parts = Object.create(null);   // 類別 -> JSON 字串（目前本機值，陣列）
@@ -39,7 +42,7 @@
   var listeners = [];
   var idb = null;
 
-  function kindOf(key) { var m = /^(checks)_\d{6}$/.exec(key); return m ? m[1] : key; }
+  function kindOf(key) { var m = /^(checks|sched)_\d{6}$/.exec(key); return m ? m[1] : key; }
   function label(key) {
     var k = kindOf(key);
     if (MONTHLY.indexOf(k) >= 0) { var ym = key.slice(-6); return LABELS[k] + '（' + ym.slice(0, 4) + '/' + ym.slice(4) + '）'; }
