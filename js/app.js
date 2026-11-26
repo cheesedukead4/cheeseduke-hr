@@ -464,14 +464,14 @@ function onbHTML(h){
     ${btns.length ? `<div class="fl-row">${btns.join('')}</div>` : ''}</section>`;
 }
 /* ---------- Offer 錄取通知書：看板填好排隊，hr@ 的履歷篩選程式約 5 分鐘內用部門範本產生 PDF、用 hr@ 寄出，PDF 傳回看板 ---------- */
-const OFFER_FORMAL = false;   // 先全部測試（寄到 hr@cheeseduke.com.tw）；正式寄給新人、104 聊聊通知等確認後再打開
+const OFFER_FORMAL = true;    // 2026-11-26 測試成功後打開：可以正式寄給新人（寄出前再確認一次），寄出後可用 104 聊聊通知
 const OFFER_DEPTS = [['直營部', '直營部（門市部範本）'], ['生產部', '生產部'], ['物管部', '物管部']];
 const OFFER_NO_TPL = ['管理部', '通路部', '電商部'];
 const OFFER_TITLES = ['甜點專櫃服務員', '包裝出貨人員', '行政人員', '生產廚務助理'];
 const OFFER_TIMES = ['09:30', '10:00', '11:00', '14:00'];
 const OFFER_PLACES = ['台南市永康區自強路32號', '新光西門', '永康東橋', '新光A11', '京站'];
 const OFFER_KEYS = ['sal', 'email', 'dept', 'title', 'date', 'time', 'pay', 'place', 'boss'];
-const OF = {drafts:{}, err:'', errId:''};
+const OF = {drafts:{}, err:'', errId:'', confirmId:'', confirmTo:''};
 function normOffer(d){
   d = obj(d);
   const f = obj(d.f), s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
@@ -516,13 +516,16 @@ function offerHTML(h){
     if (!canPii()) pdf = '<span class="muted">已產生 PDF（需要「查看證件」權限才能看）</span>';
     else { const p = PH.get(o.pdf.id); pdf = p && p.state === 'ok' ? `<button class="btn sm" type="button" data-act="pdf" data-fid="${esc(o.pdf.id)}">打開 Offer PDF</button>` : p && p.state === 'loading' ? '<span class="muted">讀取 PDF 中…</span>' : `<button class="btn sm" type="button" data-act="offer-pdf" data-fid="${esc(o.pdf.id)}">看 Offer PDF</button>`; }
   }
-  const btns = !ed ? [] : busy ? (o.st === 'queued' ? ['<button class="btn sm ghost" type="button" data-act="offer-cancel">取消排隊</button>'] : []) : [
-    `<button class="btn sm primary" type="button" data-act="offer-test">${o && o.st === 'done' ? '重新產生（測試寄到 hr@）' : '產生 Offer（測試寄到 hr@）'}</button>`,
-    OFFER_FORMAL ? '<button class="btn sm" type="button" data-act="offer-formal">正式寄給新人</button>' : ''].filter(Boolean);
+  const ask = ed && !busy && OF.confirmId === h.id;
+  const btns = !ed ? [] : busy ? (o.st === 'queued' ? ['<button class="btn sm ghost" type="button" data-act="offer-cancel">取消排隊</button>'] : [])
+    : ask ? [`<span class="confirm-q" style="width:auto">確定把 Offer 正式寄給 ${esc(OF.confirmTo)}？寄出後無法收回。</span>`, '<button class="btn sm danger-solid" type="button" data-act="offer-formal-yes">確定寄出</button>', '<button class="btn sm ghost" type="button" data-act="offer-formal-no">不要</button>']
+    : [
+    OFFER_FORMAL ? `<button class="btn sm primary" type="button" data-act="offer-formal">${o && o.st === 'done' && o.sentMode === 'formal' ? '重新寄給新人' : '正式寄給新人'}</button>` : '',
+    `<button class="btn sm${OFFER_FORMAL ? '' : ' primary'}" type="button" data-act="offer-test">${o && o.st === 'done' ? '重新產生（測試寄到 hr@）' : '產生 Offer（測試寄到 hr@）'}</button>`].filter(Boolean);
   const ch = OFFER_FORMAL && o && o.st === 'done' && o.sentMode === 'formal' && canEdit() ? chatFor({name:h.name, job:h.position}) : null;
   if (ch) btns.push('<button class="btn sm" type="button" data-act="offer-chat">用 104 聊聊通知新人</button>');
   return `<section class="sec"><h3>Offer 錄取通知書 <span class="h-count">${OFFER_FORMAL ? '' : '測試模式'}</span></h3>
-    <p class="muted">填好後按「產生 Offer」：hr@ 的履歷篩選程式約 5 分鐘內用部門的 Google 文件範本產生 PDF、用 hr@ 寄出，PDF 會傳回這裡。${OFFER_FORMAL ? '' : '目前是測試模式：信寄到 hr@cheeseduke.com.tw（標題有［測試］），不會寄給新人，也不會傳 104 聊聊。'}</p>
+    <p class="muted">填好後按「產生 Offer」：hr@ 的履歷篩選程式約 5 分鐘內用部門的 Google 文件範本產生 PDF、用 hr@ 寄出，PDF 會傳回這裡。${OFFER_FORMAL ? '「正式寄給新人」寄到上面填的 Email（寄出前會再確認一次），寄出後可以按「用 104 聊聊通知新人」；想先看 PDF 可以按「測試寄到 hr@」。' : '目前是測試模式：信寄到 hr@cheeseduke.com.tw（標題有［測試］），不會寄給新人，也不會傳 104 聊聊。'}</p>
     <div class="grid2">
       <div class="f"><label for="of-sal">稱謂</label><select class="inp" id="of-sal" data-of="sal"${dis}><option value="">請選擇</option>${['小姐', '先生'].map(x => `<option${v.sal === x ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
       ${inp('email', 'Email', 'type="email" maxlength="120"')}
@@ -547,7 +550,7 @@ function offerRead(){
   for (const k of OFFER_KEYS) { const el = $('#of-' + k); f[k] = el ? String(el.value || '').trim() : ''; }
   return f;
 }
-function offerQueue(id, mode){
+function offerQueue(id, mode, confirmed){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
   const f = offerRead(), miss = [];
   const L = {sal:'稱謂', email:'Email', dept:'報到部門', title:'Offer 職稱', date:'報到日期', time:'報到時間', pay:'薪資', place:'報到地點', boss:'報到主管'};
@@ -557,6 +560,8 @@ function offerQueue(id, mode){
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) { OF.err = 'Email 格式不對'; refreshDrawer(); return; }
   if (!OFFER_DEPTS.some(([k]) => k === f.dept)) { OF.err = `「${f.dept}」還沒有 Offer 範本`; refreshDrawer(); return; }
   OF.err = '';
+  if (mode === 'formal' && !confirmed) { OF.confirmId = id; OF.confirmTo = f.email; OF.drafts[id] = Object.assign({}, OF.drafts[id], f); refreshDrawer(); return; }
+  OF.confirmId = '';
   saveHire(id, r => { const old = obj(r.offer); r.offer = {f, req:{id: rid('of'), mode, at:Date.now(), by:myName()}, st:'queued', tries:0, pdf: old.pdf || null}; if (!r.startDate) r.startDate = f.date; });
   delete OF.drafts[id];
   pullFromStore(); refreshDrawer();
@@ -2738,6 +2743,8 @@ $('#drawer').addEventListener('click', e => {
     case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
     case 'offer-test': offerQueue(id, 'test'); break;
     case 'offer-formal': if (OFFER_FORMAL) offerQueue(id, 'formal'); break;
+    case 'offer-formal-yes': if (OFFER_FORMAL && OF.confirmId === id) offerQueue(id, 'formal', true); break;
+    case 'offer-formal-no': OF.confirmId = ''; refreshDrawer(); break;
     case 'offer-cancel': saveHire(id, r => { if (r.offer && r.offer.st === 'queued') r.offer.st = 'canceled'; }); pullFromStore(); refreshDrawer(); break;
     case 'offer-pdf': photoOf(b.dataset.fid); refreshDrawer(); break;
     case 'offer-chat': { const h1 = S.hires.get(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch && h1.offer) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:offerChatText(h1)}); break; }
