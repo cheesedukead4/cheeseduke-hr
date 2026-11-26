@@ -60,7 +60,7 @@ const STEP_DONE = {interview:'面試結果：錄取', confirm:'確認入職：�
 const STEP_HINT = {
   interview:'確認面試結果後，按「錄取」或「未錄取」。',
   confirm:'和應徵者確認要不要來：要 → 寄 Offer；不要 → 婉拒入職。',
-  offer:'寄出 Offer、確認報到日；報到當天按「已報到」。',
+  offer:'在下方「Offer 錄取通知書」填好資料產生 Offer、確認報到日；報到當天按「已報到」。',
   docs:'拍照上傳身分證／居留證正反面，存摺封面可一併上傳。',
   apollo_up:'將新人人事資料上傳至 APOLLO。',
   apollo_down:'自 APOLLO 下載加保所需檔案。',
@@ -185,7 +185,7 @@ function norm(id, d){
     ivAt: typeof d.ivAt === 'number' ? d.ivAt : null, ivBy:str(d.ivBy),
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
-    crit: normCrit(d.crit), onb: normOnb(d.onb)
+    crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null
   };
 }
 function normForm(f){
@@ -462,6 +462,110 @@ function onbHTML(h){
     <p class="muted">${esc(status)}</p>
     ${canEdit() && !ch ? '<p class="note">找不到這位在 104 聊聊的對話：請按「複製報到訊息」，用 LINE 或簡訊傳給新人。</p>' : ''}
     ${btns.length ? `<div class="fl-row">${btns.join('')}</div>` : ''}</section>`;
+}
+/* ---------- Offer 錄取通知書：看板填好排隊，hr@ 的履歷篩選程式約 5 分鐘內用部門範本產生 PDF、用 hr@ 寄出，PDF 傳回看板 ---------- */
+const OFFER_FORMAL = false;   // 先全部測試（寄到 hr@cheeseduke.com.tw）；正式寄給新人、104 聊聊通知等確認後再打開
+const OFFER_DEPTS = [['直營部', '直營部（門市部範本）'], ['生產部', '生產部'], ['物管部', '物管部']];
+const OFFER_NO_TPL = ['管理部', '通路部', '電商部'];
+const OFFER_TITLES = ['甜點專櫃服務員', '包裝出貨人員', '行政人員', '生產廚務助理'];
+const OFFER_TIMES = ['09:30', '10:00', '11:00', '14:00'];
+const OFFER_PLACES = ['台南市永康區自強路32號', '新光西門', '永康東橋', '新光A11', '京站'];
+const OFFER_KEYS = ['sal', 'email', 'dept', 'title', 'date', 'time', 'pay', 'place', 'boss'];
+const OF = {drafts:{}, err:'', errId:''};
+function normOffer(d){
+  d = obj(d);
+  const f = obj(d.f), s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+  const out = {f:{sal:s(f.sal, 10), email:s(f.email, 120), dept:s(f.dept, 20), title:s(f.title, 40), date: isDate(f.date) ? f.date : '', time:s(f.time, 20), pay:s(f.pay, 60), place:s(f.place, 80), boss:s(f.boss, 30)},
+    st: ['queued', 'working', 'done', 'failed', 'canceled'].includes(d.st) ? d.st : '', msg:s(d.msg, 300), to:s(d.to, 120),
+    sentAt: Number(d.sentAt) || 0, sentMode: d.sentMode === 'formal' ? 'formal' : d.sentMode === 'test' ? 'test' : '',
+    pdf: d.pdf && validFileId(d.pdf.id) ? {id:d.pdf.id, at:Number(d.pdf.at) || 0} : null};
+  const r = obj(d.req);
+  out.req = r.id ? {id:String(r.id), mode: r.mode === 'formal' ? 'formal' : 'test', at:Number(r.at) || 0, by:s(r.by, 40)} : null;
+  return out;
+}
+/** 欄位預設值：還沒送出的修改 → 已存的 Offer 資料 → 人事資料表（性別、Email）→ 看板（應徵職位、預計報到日）→ 管理頁報到預設值 */
+function offerVals(h){
+  const d = OF.drafts[h.id], f = h.offer ? h.offer.f : null, F = h.form || {};
+  const def = {sal: /女/.test(F.gender || '') ? '小姐' : /男/.test(F.gender || '') ? '先生' : '', email: F.email || F.email2 || '', dept:'',
+    title: OFFER_TITLES.find(t => (h.position || '').includes(t)) || (h.position || '').replace(/【[^】]*】/g, '').split(/[_＿(（<＜]/)[0].trim().slice(0, 40),
+    date: planStart(h) || '', time: S.cfg.reportTime || '', pay:'', place: S.cfg.reportPlace || S.cfg.place || '', boss:''};
+  const out = {};
+  for (const k of OFFER_KEYS) out[k] = d && k in d ? d[k] : f && f[k] ? f[k] : def[k];
+  return out;
+}
+function offerStatus(o){
+  if (!o || !o.st) return '';
+  const where = o.req && o.req.mode === 'formal' ? '寄給新人' : '測試寄到 hr@';
+  if (o.st === 'queued') return `排隊中：hr@ 的履歷篩選程式約 5 分鐘內產生 PDF 並${where}`;
+  if (o.st === 'working') return `產生中：hr@ 的履歷篩選程式正在產生 PDF 並${where}`;
+  if (o.st === 'done') return `${o.sentMode === 'formal' ? 'Offer' : '測試信'}已在 ${fmtTime(o.sentAt)} 寄到 ${o.to || '—'}`;
+  if (o.st === 'failed') return `沒有寄出：${o.msg || '原因不明'}`;
+  if (o.st === 'canceled') return '已取消排隊';
+  return '';
+}
+function offerHTML(h){
+  if (!['confirm', 'offer', 'docs'].includes(h.stage)) return '';
+  const o = h.offer, v = offerVals(h), ed = canEdit() && h.stage !== 'docs', busy = !!o && ['queued', 'working'].includes(o.st);
+  const dis = ed && !busy ? '' : ' disabled';
+  const inp = (k, label, attrs = '') => `<div class="f"><label for="of-${k}">${label}</label><input class="inp" id="of-${k}" data-of="${k}" value="${esc(v[k])}" ${attrs}${dis}></div>`;
+  const deptOpts = '<option value="">請選擇</option>' + OFFER_DEPTS.map(([k, t]) => `<option value="${k}"${v.dept === k ? ' selected' : ''}>${esc(t)}</option>`).join('')
+    + OFFER_NO_TPL.map(k => `<option value="${k}" disabled>${k}（還沒有範本）</option>`).join('');
+  const st = offerStatus(o), cls = !o ? '' : o.st === 'failed' ? ' err' : '';
+  let pdf = '';
+  if (o && o.pdf) {
+    if (!canPii()) pdf = '<span class="muted">已產生 PDF（需要「查看證件」權限才能看）</span>';
+    else { const p = PH.get(o.pdf.id); pdf = p && p.state === 'ok' ? `<button class="btn sm" type="button" data-act="pdf" data-fid="${esc(o.pdf.id)}">打開 Offer PDF</button>` : p && p.state === 'loading' ? '<span class="muted">讀取 PDF 中…</span>' : `<button class="btn sm" type="button" data-act="offer-pdf" data-fid="${esc(o.pdf.id)}">看 Offer PDF</button>`; }
+  }
+  const btns = !ed ? [] : busy ? (o.st === 'queued' ? ['<button class="btn sm ghost" type="button" data-act="offer-cancel">取消排隊</button>'] : []) : [
+    `<button class="btn sm primary" type="button" data-act="offer-test">${o && o.st === 'done' ? '重新產生（測試寄到 hr@）' : '產生 Offer（測試寄到 hr@）'}</button>`,
+    OFFER_FORMAL ? '<button class="btn sm" type="button" data-act="offer-formal">正式寄給新人</button>' : ''].filter(Boolean);
+  const ch = OFFER_FORMAL && o && o.st === 'done' && o.sentMode === 'formal' && canEdit() ? chatFor({name:h.name, job:h.position}) : null;
+  if (ch) btns.push('<button class="btn sm" type="button" data-act="offer-chat">用 104 聊聊通知新人</button>');
+  return `<section class="sec"><h3>Offer 錄取通知書 <span class="h-count">${OFFER_FORMAL ? '' : '測試模式'}</span></h3>
+    <p class="muted">填好後按「產生 Offer」：hr@ 的履歷篩選程式約 5 分鐘內用部門的 Google 文件範本產生 PDF、用 hr@ 寄出，PDF 會傳回這裡。${OFFER_FORMAL ? '' : '目前是測試模式：信寄到 hr@cheeseduke.com.tw（標題有［測試］），不會寄給新人，也不會傳 104 聊聊。'}</p>
+    <div class="grid2">
+      <div class="f"><label for="of-sal">稱謂</label><select class="inp" id="of-sal" data-of="sal"${dis}><option value="">請選擇</option>${['小姐', '先生'].map(x => `<option${v.sal === x ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
+      ${inp('email', 'Email', 'type="email" maxlength="120"')}
+      <div class="f"><label for="of-dept">報到部門</label><select class="inp" id="of-dept" data-of="dept"${dis}>${deptOpts}</select></div>
+      ${inp('title', 'Offer 職稱', 'list="of-titles" maxlength="40"')}
+      ${inp('date', '報到日期', 'type="date"')}
+      ${inp('time', '報到時間', 'list="of-times" maxlength="20" placeholder="例如：09:30"')}
+      ${inp('pay', '薪資', 'maxlength="60" placeholder="例如：時薪 200 元、月薪 32,000 元"')}
+      ${inp('place', '報到地點', 'list="of-places" maxlength="80"')}
+      ${inp('boss', '報到主管', 'maxlength="30"')}
+    </div>
+    <datalist id="of-titles">${OFFER_TITLES.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
+    <datalist id="of-times">${OFFER_TIMES.map(t => `<option value="${t}">`).join('')}</datalist>
+    <datalist id="of-places">${OFFER_PLACES.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
+    ${st ? `<p class="imp-msg${cls}" role="status">${esc(st)}</p>` : ''}
+    ${OF.err && OF.errId === h.id ? `<p class="imp-msg err" role="alert">${esc(OF.err)}</p>` : ''}
+    ${btns.length || pdf ? `<div class="fl-row">${btns.join('')}${pdf}</div>` : ''}
+  </section>`;
+}
+function offerRead(){
+  const f = {};
+  for (const k of OFFER_KEYS) { const el = $('#of-' + k); f[k] = el ? String(el.value || '').trim() : ''; }
+  return f;
+}
+function offerQueue(id, mode){
+  const h = S.hires.get(id); if (!h || !canEdit()) return;
+  const f = offerRead(), miss = [];
+  const L = {sal:'稱謂', email:'Email', dept:'報到部門', title:'Offer 職稱', date:'報到日期', time:'報到時間', pay:'薪資', place:'報到地點', boss:'報到主管'};
+  for (const k of OFFER_KEYS) if (!f[k]) miss.push(L[k]);
+  OF.errId = id;
+  if (miss.length) { OF.err = `還沒填：${miss.join('、')}`; refreshDrawer(); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) { OF.err = 'Email 格式不對'; refreshDrawer(); return; }
+  if (!OFFER_DEPTS.some(([k]) => k === f.dept)) { OF.err = `「${f.dept}」還沒有 Offer 範本`; refreshDrawer(); return; }
+  OF.err = '';
+  saveHire(id, r => { const old = obj(r.offer); r.offer = {f, req:{id: rid('of'), mode, at:Date.now(), by:myName()}, st:'queued', tries:0, pdf: old.pdf || null}; if (!r.startDate) r.startDate = f.date; });
+  delete OF.drafts[id];
+  pullFromStore(); refreshDrawer();
+  toast(mode === 'formal' ? '已排入：約 5 分鐘內由 hr@ 寄給新人' : '已排入：約 5 分鐘內由 hr@ 產生 Offer，測試寄到 hr@cheeseduke.com.tw');
+}
+function offerChatText(h){
+  const f = h.offer.f, t = (S.tpl.find(x => x.id === 'tpl-offer') || {}).text || '';
+  const ctx = {'職缺': f.title, '姓名': h.name, '公司名稱': S.cfg.company, '報到日期': f.date ? slash(f.date) : '', '報到時間': f.time};
+  return (t ? fillTpl(t, ctx) : `${h.name}您好，恭喜您錄取起士公爵「${f.title}」！`) + `\n\n錄取通知書已寄到您的 Email（${f.email}），請查收並回覆是否接受錄取。`;
 }
 function rowById(id){
   if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
@@ -2165,8 +2269,8 @@ function refreshDrawer(){
   $('#d-form').innerHTML = h.form ? formDataHTML(h) : '';
   $('#iv-meta').textContent = h.ivAt ? `最後更新 ${fmtTime(h.ivAt)}${h.ivBy ? '・' + h.ivBy : ''}` : '';
   const steps = stepsHTML(h), ext = extHTML(h);
-  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h);
-  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + docs + steps + ext : onb + steps + ext + docs;
+  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h), offer = offerHTML(h);
+  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + docs + steps + offer + ext : offer + onb + steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
   const jb = $('#d-job'), af = jb.contains(document.activeElement) ? document.activeElement.id : '';
   jb.hidden = h.stage !== 'interview' || (!S.jobs.length && !isAdmin());
@@ -2632,11 +2736,20 @@ $('#drawer').addEventListener('click', e => {
     case 'onb-send': { const h1 = onbEnsure(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:onbText(h1)}); else if (h1) toast('找不到 104 聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
     case 'onb-copy': { const h1 = onbEnsure(id); if (h1) { copyText(onbText(h1)); toast('已複製報到訊息，貼到 LINE 或簡訊傳給新人'); } refreshDrawer(); break; }
     case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
+    case 'offer-test': offerQueue(id, 'test'); break;
+    case 'offer-formal': if (OFFER_FORMAL) offerQueue(id, 'formal'); break;
+    case 'offer-cancel': saveHire(id, r => { if (r.offer && r.offer.st === 'queued') r.offer.st = 'canceled'; }); pullFromStore(); refreshDrawer(); break;
+    case 'offer-pdf': photoOf(b.dataset.fid); refreshDrawer(); break;
+    case 'offer-chat': { const h1 = S.hires.get(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch && h1.offer) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:offerChatText(h1)}); break; }
     case 'cancel': S.confirm = null; refreshDrawer(); break;
     case 'toggle-id': S.showId = !S.showId; refreshDrawer(); break;
   }
 });
 $('#d-close').addEventListener('click', () => closeDrawer());
+// Offer 欄位：打到一半畫面重畫也不會不見
+const ofDraft = e => { const k = e.target.dataset && e.target.dataset.of; if (!k || !S.openId) return; (OF.drafts[S.openId] = OF.drafts[S.openId] || {})[k] = e.target.value; };
+$('#d-dyn').addEventListener('input', ofDraft);
+$('#d-dyn').addEventListener('change', ofDraft);
 $('#obm').addEventListener('click', e => {
   if (e.target.closest('[data-ob-close]')) { closeOb(); return; }
   if (e.target.closest('#ob-send')) sendOb(false);
