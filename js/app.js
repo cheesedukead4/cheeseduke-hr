@@ -186,6 +186,7 @@ function norm(id, d){
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
     crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null,
+    ofr: d.ofr && /^[a-f0-9]{32}$/.test(d.ofr.t || '') ? {t:d.ofr.t, exp:Number(d.ofr.exp) || 0, job:str(d.ofr.job).slice(0, 80), ans: d.ofr.ans === 'yes' || d.ofr.ans === 'no' ? d.ofr.ans : '', ansAt:Number(d.ofr.ansAt) || 0} : null,
     link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80), name:str(d.link104.name).slice(0, 40)} : null
   };
 }
@@ -803,14 +804,26 @@ function decide(id, hired){
 }
 /* ---------- 錄取通知：用 104 聊聊（找不到聊聊就用 104 訊息；都沒有就複製）傳「錄取通知」範本 ---------- */
 function hireLetterRef(h){ return (h.link104 && h.link104.cv) || ('row:hire:' + h.id); }
+/** 錄取回覆連結（reply.html#t=代碼，14 天有效）：沒有或過期就產生新的 */
+function ofrEnsure(id){
+  const h = S.hires.get(id); if (!h || !canEdit()) return null;
+  if (h.ofr && h.ofr.exp > Date.now() && !h.ofr.ans) return h;
+  const job = ((h.link104 && h.link104.job) || h.position || '').replace(/【[^】]*】/g, '').trim().slice(0, 80);
+  if (!saveHire(id, r => { r.ofr = {t: onbToken(), exp: Date.now() + ONB_DAYS * 86400000, at: Date.now(), by: myName(), job}; })) return null;
+  pullFromStore();
+  return S.hires.get(id);
+}
 function hireLetterText(h){
   const t = (S.tpl.find(x => x.id === 'tpl-offer') || {}).text || '{{姓名}}您好：\n恭喜您！經過面試評估後，我們很高興通知您，您已通過本次甄選，誠摯邀請您加入{{公司名稱}}團隊。\n\n【錄取資訊】\n職務：{{職缺}}\n報到日期：{{報到日期}}\n報到時間：{{報到時間}}\n請於收到通知後回覆是否接受錄取，以利後續報到安排。';
   const name = (h.link104 && h.link104.name) || h.name, job = ((h.link104 && h.link104.job) || h.position || '').replace(/【[^】]*】/g, '').trim();
   const ps = planStart(h);
-  return fillTpl(t, {'姓名': name, '職缺': job, '公司名稱': S.cfg.company, '報到日期': ps ? slash(ps) : '', '報到時間': ps ? S.cfg.reportTime : '', '面試地點': S.cfg.place});
+  const link = h.ofr ? `${REPLY_URL}#t=${h.ofr.t}` : '';
+  let text = fillTpl(t, {'姓名': name, '職缺': job, '公司名稱': S.cfg.company, '報到日期': ps ? slash(ps) : '', '報到時間': ps ? S.cfg.reportTime : '', '面試地點': S.cfg.place, '回覆連結': link});
+  if (link && !text.includes(link)) text += `\n\n請點下面的連結，按「接受錄取」或「婉拒」回覆我們：\n${link}`;   // 範本沒有 {{回覆連結}} 就加在最後
+  return text;
 }
 function hireLetter(id){
-  const h = S.hires.get(id); if (!h || !canEdit()) return;
+  const h = ofrEnsure(id); if (!h) return;
   const name = (h.link104 && h.link104.name) || h.name, job = (h.link104 && h.link104.job) || h.position || '', cv = (h.link104 && h.link104.cv) || '';
   const ch = chatFor({name, job}), text = hireLetterText(h);
   const row = {id:'hire:' + id, name, job, cv, preset:text};
@@ -1137,6 +1150,7 @@ function cardHTML(h){
     const dc = sheetDecChip(h); if (dc) chips.push(dc);
     if (planStart(h)) chips.push(startChip(h));
     const lo = obFor(hireLetterRef(h)); if (lo && lo.createdAt >= (s.at || 0) - 60000 && lo.type !== 'skip') chips.push(chip(`錄取通知・${{queued:'排隊中', sending:'送出中', sent:'已送出', failed:'送出失敗', canceled:'已取消'}[lo.status] || ''}`, lo.status === 'sent' ? 'ok' : lo.status === 'failed' ? 'danger' : 'warn'));
+    if (h.ofr && !h.ofr.ans) chips.push(chip('等新人按接受／婉拒', 'warn'));
     if (canW && !(lo && lo.createdAt >= (s.at || 0) - 60000 && ['queued', 'sending', 'sent'].includes(lo.status))) acts.push(`<button class="btn sm" type="button" data-act="hire-letter" data-id="${id}">傳錄取通知</button>`);
     if (canW) acts.push(
       `<button class="btn sm primary" type="button" data-act="join-yes" data-id="${id}">要，寄 Offer</button>`,
@@ -1144,6 +1158,7 @@ function cardHTML(h){
   } else if (h.stage === 'offer') {
     const rs = extFor(h).result;
     chips.push(startChip(h));
+    if (h.ofr && h.ofr.ans === 'yes') chips.push(chip(`新人已接受錄取 ${md(tsDate(h.ofr.ansAt))}`, 'ok'));
     const oev = (extFor(h).invite || {}).ev || ''; if (/^到職日期提醒/.test(oev)) chips.push(chip(`104 報到：${oev.replace('到職日期提醒', '')}`, evCls(oev)));
     if (rs && rs.offer) chips.push(chip(`Offer ${rs.offer}`, rs.offer === '已寄出' ? 'ok' : /未寄送/.test(rs.offer) ? 'warn' : ''));
     if (rs && rs.pdf) acts.push(`<a class="btn sm" href="${esc(rs.pdf)}" target="_blank" rel="noopener">Offer PDF ↗</a>`);
@@ -1233,6 +1248,7 @@ function renderBoard(){
  * 另外也可以加開單次時段（隨機 id，照舊）。產生規則和雲端後端 Code.gs 的 slotExpand_ 相同，改一邊要改另一邊。 */
 const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
 const ONBOARD_URL = new URL('onboard.html', location.href).href.replace(/[?#].*$/, '');
+const REPLY_URL = new URL('reply.html', location.href).href.replace(/[?#].*$/, '');
 const SL = {confirm:null, msg:'', msgErr:false, wk:null, dirty:false, copyFrom:null};
 const WD_ = '日一二三四五六';
 const SL_DURS = [15, 20, 30, 45, 60, 90, 120];
@@ -1967,7 +1983,7 @@ function obAdminHTML(){
       <div class="job-ed-in">
         <div class="grid2"><div class="f"><label for="te-title-${id}">名稱</label><input id="te-title-${id}" data-te="title" data-id="${id}" value="${esc(v('title'))}" maxlength="40"></div>
         <div class="f"><label for="te-kind-${id}">用在</label><select class="inp" id="te-kind-${id}" data-te="kind" data-id="${id}">${TPL_KINDS.map(([k, l]) => `<option value="${k}"${v('kind') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
-        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
+        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}；錄取通知另有 {{報到日期}} {{報到時間}} {{回覆連結}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
         <div class="fl-row">${btns}</div>
       </div></details>`;
   }).join('');
