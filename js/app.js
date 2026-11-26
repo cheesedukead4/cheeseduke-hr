@@ -299,11 +299,11 @@ function extItems(key, useQ = true){
   }
   if (key === 'x_invite') {
     const floor = addDays(t, -RC_DAYS.invite);
-    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q).filter(r => !inviteCancel(r) && !obWantsNext(r)))
+    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q).filter(r => !r.closed && !obWantsNext(r)))
       .sort((a, b) => (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_booked') {
-    return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14))).concat(obInviteRows(q).filter(obWantsNext))
+    return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14))).concat(obInviteRows(q).filter(r => !r.closed && obWantsNext(r)))
       .sort((a, b) => ((a.ivD || '9999') + a.ivT) < ((b.ivD || '9999') + b.ivT) ? -1 : 1);
   }
   if (key === 'x_cancel') {
@@ -348,7 +348,8 @@ function normOb(d){
     to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400), room: (rm => rm.jobNo && rm.pId ? {id:s(rm.id, 40), jobNo:s(rm.jobNo, 20), pId:s(rm.pId, 20)} : null)(obj(to.room))}, text:s(d.text, 1000),
     opts:{job:s(op.job, 80), place:s(op.place, 120), contactName:s(op.contactName, 40), contactPhone:s(op.contactPhone, 40), replyDays: Number.isInteger(op.replyDays) ? op.replyDays : 3},
     createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, via:s(d.via, 10), result:s(d.result, 300), tries: Number(d.tries) || 0,
-    reply: d.reply && (d.reply.ans === 'yes' || d.reply.ans === 'no') ? {ans:d.reply.ans, at:Number(d.reply.at) || 0} : null};
+    reply: d.reply && (d.reply.ans === 'yes' || d.reply.ans === 'no') ? {ans:d.reply.ans, at:Number(d.reply.at) || 0} : null,
+    hide: Number(d.hide) || 0};   // 人資在「邀約中／已約面試」按了「移除」
 }
 function normTpl(d){
   d = obj(d);
@@ -390,18 +391,27 @@ function obChip(o){
 /** 範本裡的 {{職缺}} 這類欄位換成實際內容；沒有資料的保留原樣，送出前看得到 */
 const fillTpl = (text, ctx) => String(text || '').replace(/\{\{\s*([^}]+?)\s*\}\}/g, (m, k) => ctx[k] ? ctx[k] : m);
 const obCtx = (row, job) => ({'職缺': job || row.job || '', '姓名': row.name || '', '面試地點': S.cfg.place, '公司名稱': S.cfg.company, '應徵連結': APPLY_URL, '人事資料表單連結': APPLY_URL});
-/** 看板上自己邀約、試算表裡還沒有的人（放在「邀約中」） */
+/** 同一位應徵者（姓名＋職缺）：104 上投了好幾次履歷時連結不同，但看板上算同一個人 */
+const obPerson = o => normName(o.to.name) + '|' + jobKey(o.to.job);
+/** 用 104 聊聊送的邀約（小幫手 1.4.0 起）：訊息上沒有 104 的按鈕，104 聊聊的事件跟這次邀約無關，只看邀約連結的回覆 */
+const obViaChat = o => /聊聊/.test(o.result || '') || (o.via === 'manual' && o.createdAt >= Date.parse('2026-11-27T01:00:00+08:00'));
+/** 看板上自己邀約、試算表裡還沒有的人（放在「邀約中」；按了有興趣的放「已約面試」）
+ *  同一個人只看最新一筆邀約；人資按了「移除」、之後寄過感謝函或標記不邀約（婉拒）的，標 closed 不顯示 */
 function obInviteRows(q){
   const seen = new Set(), out = [];
   [...S.outbox].sort((a, b) => b.createdAt - a.createdAt).forEach(o => {
-    if (o.type !== 'invite' || !['queued', 'sending', 'sent', 'failed'].includes(o.status) || seen.has(o.to.ref)) return;
-    seen.add(o.to.ref);
+    if (o.type !== 'invite' || !['queued', 'sending', 'sent', 'failed'].includes(o.status)) return;
+    const pk = obPerson(o);
+    if (seen.has(o.to.ref) || seen.has(pk)) return;
+    seen.add(o.to.ref); seen.add(pk);
     if (R.invite.some(i => o.to.cv && i.cv === o.to.cv)) return;
     const r = {id:'ob:' + o.id, src:'outbox', name:o.to.name, job:o.to.job, cv:o.to.cv, at: o.createdAt ? ymd(new Date(o.createdAt)) + 'T' + pad(new Date(o.createdAt).getHours()) + ':' + pad(new Date(o.createdAt).getMinutes()) : '',
       ob:o, st:'', ev:'', ivD:'', ivT:'', plat:'看板邀約', formSt:'', formFill:'', mail:'', sum:'', why:'', tier:'', score:null, type:''};
-    const ch = o.status === 'sent' ? chatFor(r) : null, chT = ch ? Date.parse(String(ch.time).replace(' ', 'T') + '+08:00') : 0;
+    const ch = o.status === 'sent' && !obViaChat(o) ? chatFor(r) : null, chT = ch ? Date.parse(String(ch.time).replace(' ', 'T') + '+08:00') : 0;
     if (ch && chT >= (o.sentAt || o.createdAt || 0) - 10 * 60000) r.ev = chatEv(ch);
     if (o.reply) r.ev = o.reply.ans === 'yes' ? '有意願' : '無意願';   // 應徵者在邀約連結頁按的（比 104 的按鈕優先）
+    r.closed = !!o.hide || inviteCancel(r) || inviteDone(r)
+      || S.outbox.some(x => (x.type === 'thanks' || x.type === 'skip') && obPerson(x) === pk && x.createdAt >= o.createdAt && !['canceled', 'failed'].includes(x.status));
     if (rowHired(r) || (q && ![r.name, r.job].some(x => x.toLowerCase().includes(q)))) return;
     out.push(r);
   });
@@ -1119,6 +1129,7 @@ function extCardHTML(r, key){
     if (o && o.status === 'failed') acts.push(`<button class="btn sm" type="button" data-ob="retry" data-ob-id="${esc(o.id)}">重送</button>`);
     if (o && o.status === 'failed' && o.text && is104(o.to.cv)) acts.push(`<button class="btn sm" type="button" data-ob="manual" data-ob-id="${esc(o.id)}">改手動送</button>`);
     if (o && o.status === 'queued') acts.push(`<button class="btn sm ghost" type="button" data-ob="cancel" data-ob-id="${esc(o.id)}">取消送出</button>`);
+    if (r.src === 'outbox' && (key === 'x_invite' || key === 'x_booked')) acts.push(`<button class="btn sm ghost" type="button" data-ob="hide" data-row="${rid_}">移除</button>`);
   }
   const links = [extLink(r.cv, '104 履歷'), extLink(r.mail, 'Gmail')].filter(Boolean).join('');
   return `<article class="card ext">
@@ -1227,7 +1238,7 @@ function colExtraHTML(key, mNum){
     return foldCardsHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extCardHTML(r, 'x_screen')))
       + foldHTML('noinv', `已決定不邀約・${nd.length} 位`, nd.map(r => extLi(r, obFor(refOf(r)).type === 'skip' ? '只標記不邀約' : '感謝函' + ({queued:'排隊中', sending:'送出中', sent:'已送出'}[obFor(refOf(r)).status] || ''))));
   }
-  if (key === 'x_invite' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `婉拒或取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r, [r.ev || r.st, r.job].filter(Boolean).join('・')))); }
+  // 邀約中：應徵者婉拒就直接拿掉，不另外列「婉拒或取消」（2026-11-27 使用者要求）
   return '';
 }
 function renderBoard(){
@@ -2895,6 +2906,14 @@ $('#board').addEventListener('click', e => {
   if (act === 'chat') { const r = rowById(b.dataset.row), c = S.chat.items.find(x => x.id === b.dataset.room); if (r && c) openOb('chat', Object.assign({}, r, {chat:c})); return; }
   if (act === 'retry') { obUpdate(b.dataset.obId, {status:'queued', tries:0, result:''}); toast('已重新排入送出'); return; }
   if (act === 'cancel') { const cur = ST.get('outbox', b.dataset.obId); if (cur && cur.status === 'queued') { obUpdate(b.dataset.obId, {status:'canceled'}); toast('已取消送出'); } else toast('已經在送出中，來不及取消'); return; }
+  if (act === 'hide') {   // 從「邀約中／已約面試」移除：這個人所有還沒移除的邀約都標起來（排隊中的順便取消），可以復原
+    const r = rowById(b.dataset.row); if (!r || !r.ob) return;
+    const pk = obPerson(r.ob), now = Date.now();
+    const olds = S.outbox.filter(o => o.type === 'invite' && obPerson(o) === pk && !o.hide).map(o => ({id:o.id, status:o.status}));
+    olds.forEach(x => obUpdate(x.id, Object.assign({hide:now}, x.status === 'queued' ? {status:'canceled'} : {})));
+    toast(`已移除 ${r.name}`, () => olds.forEach(x => obUpdate(x.id, {hide:0, status:x.status})), 10000);
+    return;
+  }
   openOb(act, rowById(b.dataset.row));
 }, true);
 $('#users-view').addEventListener('click', async e => {
