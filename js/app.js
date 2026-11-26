@@ -344,7 +344,8 @@ function normOb(d){
   return {id:String(d.id), type:d.type, status: OB_ST.includes(d.status) ? d.status : 'queued',
     to:{name:s(to.name, 40), job:s(to.job, 80), cv:httpsUrl(to.cv), ref:s(to.ref, 400), room: (rm => rm.jobNo && rm.pId ? {id:s(rm.id, 40), jobNo:s(rm.jobNo, 20), pId:s(rm.pId, 20)} : null)(obj(to.room))}, text:s(d.text, 1000),
     opts:{job:s(op.job, 80), place:s(op.place, 120), contactName:s(op.contactName, 40), contactPhone:s(op.contactPhone, 40), replyDays: Number.isInteger(op.replyDays) ? op.replyDays : 3},
-    createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, via:s(d.via, 10), result:s(d.result, 300), tries: Number(d.tries) || 0};
+    createdAt: Number(d.createdAt) || 0, createdBy:s(d.createdBy, 40), sentAt: Number(d.sentAt) || 0, via:s(d.via, 10), result:s(d.result, 300), tries: Number(d.tries) || 0,
+    reply: d.reply && (d.reply.ans === 'yes' || d.reply.ans === 'no') ? {ans:d.reply.ans, at:Number(d.reply.at) || 0} : null};
 }
 function normTpl(d){
   d = obj(d);
@@ -396,6 +397,7 @@ function obInviteRows(q){
       ob:o, st:'', ev:'', ivD:'', ivT:'', plat:'看板邀約', formSt:'', formFill:'', mail:'', sum:'', why:'', tier:'', score:null, type:''};
     const ch = o.status === 'sent' ? chatFor(r) : null, chT = ch ? Date.parse(String(ch.time).replace(' ', 'T') + '+08:00') : 0;
     if (ch && chT >= (o.sentAt || o.createdAt || 0) - 10 * 60000) r.ev = chatEv(ch);
+    if (o.reply) r.ev = o.reply.ans === 'yes' ? '有意願' : '無意願';   // 應徵者在邀約連結頁按的（比 104 的按鈕優先）
     if (rowHired(r) || (q && ![r.name, r.job].some(x => x.toLowerCase().includes(q)))) return;
     out.push(r);
   });
@@ -1249,6 +1251,7 @@ function renderBoard(){
  * 另外也可以加開單次時段（隨機 id，照舊）。產生規則和雲端後端 Code.gs 的 slotExpand_ 相同，改一邊要改另一邊。 */
 const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
 const ONBOARD_URL = new URL('onboard.html', location.href).href.replace(/[?#].*$/, '');
+const INVITE_URL = new URL('invite.html', location.href).href.replace(/[?#].*$/, '');
 const REPLY_URL = new URL('reply.html', location.href).href.replace(/[?#].*$/, '');
 const SL = {confirm:null, msg:'', msgErr:false, wk:null, dirty:false, copyFrom:null};
 const WD_ = '日一二三四五六';
@@ -1882,7 +1885,10 @@ function sendOb(manual){
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const obId = rid('ob');
   // 訊息裡的線上應徵連結加上這次的代碼（apply.html?i=…）：應徵者填完資料，看板就知道是 104 上的哪一位
-  const text = type === 'skip' ? '' : (r.cv ? val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '?i=' + obId + part : part).join(APPLY_URL) : val('ob-text')), job = val('ob-job') || r.job || '';
+  // 邀約：連結換成邀約回覆頁（有興趣／婉拒的按鈕）；其他訊息：線上應徵連結帶代碼
+  const text = type === 'skip' ? '' : !r.cv ? val('ob-text') : type === 'invite'
+    ? val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '\u0000' + part : part).join(APPLY_URL).split(APPLY_URL + '\u0000').join(INVITE_URL + '?i=' + obId)
+    : val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '?i=' + obId + part : part).join(APPLY_URL), job = val('ob-job') || r.job || '';
   const room = type === 'chat' && r.chat ? {id:r.chat.id, jobNo:r.chat.jobNo, pId:r.chat.pId} : null;
   const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
     : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : type === 'chat' && !room ? '找不到這位應徵者的 104 聊聊對話。' : '';
