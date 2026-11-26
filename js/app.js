@@ -880,7 +880,7 @@ function deletePhoto(id, key){
 }
 function deleteRecord(id){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
-  const files = Object.values(h.docs).map(d => d.id);
+  const files = Object.values(h.docs).map(d => d.id).concat(h.offer && h.offer.pdf ? [h.offer.pdf.id] : []);   // 證件照片和 Offer PDF 一起丟垃圾桶
   closeDrawer(true);
   ST.remove('hires', id);
   files.forEach(fid => AU.api('photoDel', {id:fid}).catch(() => {}));
@@ -1435,7 +1435,7 @@ function batchDelete(){
   if (!canEdit()) return;
   const ids = [...S.sel].filter(id => S.hires.has(id));
   const files = [], before = [];
-  ids.forEach(id => { Object.values(S.hires.get(id).docs).forEach(d => files.push(d.id)); const cur = ST.get('hires', id); if (cur) before.push(JSON.parse(JSON.stringify(cur))); });
+  ids.forEach(id => { const h = S.hires.get(id); Object.values(h.docs).forEach(d => files.push(d.id)); if (h.offer && h.offer.pdf) files.push(h.offer.pdf.id); const cur = ST.get('hires', id); if (cur) before.push(JSON.parse(JSON.stringify(cur))); });
   ST.removeMany('hires', ids);
   files.forEach(fid => AU.api('photoDel', {id:fid}).catch(() => {}));
   S.sel.clear(); S.batchConfirm = false;
