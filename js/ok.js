@@ -1,7 +1,7 @@
 /*
  * 起士公爵｜面試前一天提醒、Offer 確認（ok.html#t=代碼，不用登入）
  * 面試提醒（kind ivr）：「會準時到」「要改時間」（直接重選時段）「不來了」
- * Offer 確認（kind ofc）：「已收到、會準時報到」「報到日要調整」（可寫想改的日期）
+ * Offer 確認（kind ofc）：「已收到、會準時報到」「報到日要調整」（點選想改的日期，可加備註）
  * 讀資料 POST action=tokInfo，回覆 POST action=tokReply；看板自動更新。
  */
 (function () {
@@ -12,7 +12,8 @@ const $ = s => document.querySelector(s);
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const WD = '日一二三四五六';
 const dayLabel = s => { const d = new Date(s + 'T00:00:00'); return isNaN(d) ? s : `${d.getMonth() + 1}/${d.getDate()}（${WD[d.getDay()]}）`; };
-const st = { tok:null, err:'', busy:false, mode:'', slot:'', note:'', msg:'' };
+const st = { tok:null, err:'', busy:false, mode:'', slot:'', note:'', want:'', msg:'' };
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 async function api(action, body){
   const r = await fetch(URL_, {method:'POST', redirect:'follow', cache:'no-store', headers:{'Content-Type':'text/plain;charset=utf-8'},
@@ -45,9 +46,10 @@ function ivrHTML(v){
 }
 function ofcHTML(v){
   const when = [v.date ? dayLabel(v.date) : '', v.time].filter(Boolean).join(' ');
-  const done = v.ans === 'yes' ? '<p class="ob-msg">已收到：您會準時報到。歡迎加入！</p>' : v.ans === 'change' ? `<p class="ob-msg">已收到您想調整報到日${v.note ? `（${esc(v.note)}）` : ''}，人資會再和您聯絡。</p>` : '';
+  const done = v.ans === 'yes' ? '<p class="ob-msg">已收到：您會準時報到。歡迎加入！</p>' : v.ans === 'change' ? `<p class="ob-msg">已收到您想把報到日改到 ${esc(v.want ? dayLabel(v.want) : '其他日期')}${v.note ? `（${esc(v.note)}）` : ''}，人資會再和您聯絡。</p>` : '';
   const act = st.mode === 'change'
-    ? `<p class="rp-q">想改到哪一天？（例如：12/15 之後都可以）</p><textarea class="rp-note" id="rp-note" rows="3" maxlength="200">${esc(st.note)}</textarea><div class="ob-btns"><button class="ap-btn" type="button" data-go="change"${dis()}>${st.busy ? '送出中…' : '送出'}</button><button class="ob-b2" type="button" data-back${dis()}>返回</button></div>`
+    ? `<label class="rp-q" for="rp-date">想改到哪一天？</label><input class="rp-note" type="date" id="rp-date" min="${ymd(new Date())}" value="${esc(st.want)}"${dis()}>
+      <label class="rp-q" for="rp-note">其他想說的（可以不填）</label><textarea class="rp-note" id="rp-note" rows="2" maxlength="200" placeholder="例如：那週要考試，12/15 之後都可以">${esc(st.note)}</textarea><div class="ob-btns"><button class="ap-btn" type="button" data-go="change"${dis()}>${st.busy ? '送出中…' : '送出'}</button><button class="ob-b2" type="button" data-back${dis()}>返回</button></div>`
     : `<div class="ob-btns"><button class="ap-btn" type="button" data-go="yes"${dis()}>已收到，會準時報到</button><button class="ob-b2" type="button" data-mode="change"${dis()}>報到日要調整</button></div>`;
   return `<p class="ap-intro">${esc(v.name)} 您好，歡迎加入${esc(v.company)}！錄取通知書（Offer）已經寄到您的 Email，請確認報到資訊。</p>
     <section class="ap-sec"><h2>報到資訊</h2>${info([['報到時間', when || '另行通知'], ['報到地點', v.place], ['職務', v.job]])}</section>
@@ -63,7 +65,8 @@ function render(){
   main.innerHTML = (v.kind === 'ofc' ? ofcHTML(v) : ivrHTML(v)) + (st.msg ? `<p class="ob-msg" role="status">${esc(st.msg)}</p>` : '');
 }
 document.addEventListener('change', e => { if (e.target.name === 'slot') st.slot = e.target.value; });
-document.addEventListener('input', e => { if (e.target.id === 'rp-note') st.note = e.target.value; });
+document.addEventListener('input', e => { if (e.target.id === 'rp-note') st.note = e.target.value; if (e.target.id === 'rp-date') st.want = e.target.value; });
+document.addEventListener('change', e => { if (e.target.id === 'rp-date') st.want = e.target.value; });
 document.addEventListener('click', async e => {
   if (st.busy) return;
   const m = e.target.closest('[data-mode]'); if (m) { st.mode = m.dataset.mode; st.msg = ''; render(); return; }
@@ -71,9 +74,9 @@ document.addEventListener('click', async e => {
   const g = e.target.closest('[data-go]'); if (!g) return;
   const ans = g.dataset.go, body = {ans};
   if (st.tok.kind === 'ivr' && ans === 'change') { if (!st.slot) { st.msg = '請先選一個新的時段。'; render(); return; } body.slotId = st.slot; }
-  if (st.tok.kind === 'ofc' && ans === 'change') body.note = st.note.trim();
+  if (st.tok.kind === 'ofc' && ans === 'change') { if (!st.want) { st.msg = '請先點選想改的報到日期。'; render(); return; } body.date = st.want; body.note = st.note.trim(); }
   st.busy = true; st.msg = ''; render();
-  try { st.tok = (await api('tokReply', body)).tok; st.mode = ''; st.slot = ''; }
+  try { st.tok = (await api('tokReply', body)).tok; st.mode = ''; st.slot = ''; st.want = ''; st.note = ''; }
   catch (err) {
     if (err.code === 'expired') st.err = err.message;
     else { if (err.tok) st.tok = err.tok; st.msg = navigator.onLine === false ? '目前沒有網路，連上網路後再按一次。' : (err.message || '送出失敗，請再按一次'); }

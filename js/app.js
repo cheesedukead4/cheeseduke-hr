@@ -187,7 +187,7 @@ function norm(id, d){
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
     crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null,
     ivr: d.ivr && typeof d.ivr === 'object' ? {queued:!!d.ivr.queued, date:str(d.ivr.date).slice(0, 10), ans:['yes', 'no', 'change'].includes(d.ivr.ans) ? d.ivr.ans : '', ansAt:Number(d.ivr.ansAt) || 0, from:str(d.ivr.from).slice(0, 20)} : null,
-    ofc: d.ofc && /^[a-f0-9]{32}$/.test(d.ofc.t || '') ? {t:d.ofc.t, ans:['yes', 'change'].includes(d.ofc.ans) ? d.ofc.ans : '', note:str(d.ofc.note).slice(0, 200), ansAt:Number(d.ofc.ansAt) || 0} : null,
+    ofc: d.ofc && /^[a-f0-9]{32}$/.test(d.ofc.t || '') ? {t:d.ofc.t, ans:['yes', 'change'].includes(d.ofc.ans) ? d.ofc.ans : '', note:str(d.ofc.note).slice(0, 200), want: isDate(d.ofc.want) ? d.ofc.want : '', ansAt:Number(d.ofc.ansAt) || 0} : null,
     withdrawn: !!d.withdrawn,
     ofr: d.ofr && /^[a-f0-9]{32}$/.test(d.ofr.t || '') ? {t:d.ofr.t, exp:Number(d.ofr.exp) || 0, job:str(d.ofr.job).slice(0, 80), ans: d.ofr.ans === 'yes' || d.ofr.ans === 'no' ? d.ofr.ans : '', ansAt:Number(d.ofr.ansAt) || 0} : null,
     link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80), name:str(d.link104.name).slice(0, 40)} : null
@@ -1171,7 +1171,7 @@ function cardHTML(h){
     chips.push(startChip(h));
     if (h.ofr && h.ofr.ans === 'yes') chips.push(chip(`新人已接受錄取 ${md(tsDate(h.ofr.ansAt))}`, 'ok'));
     if (h.ofc && h.ofc.ans === 'yes') chips.push(chip('新人確認會準時報到', 'ok'));
-    else if (h.ofc && h.ofc.ans === 'change') chips.push(chip(`報到日要調整${h.ofc.note ? '：' + h.ofc.note : ''}`, 'warn'));
+    else if (h.ofc && h.ofc.ans === 'change') chips.push(chip(`報到日要調整${h.ofc.want ? '：想改到 ' + md(h.ofc.want) : ''}${h.ofc.note ? '（' + h.ofc.note + '）' : ''}`, 'warn'));
     const oev = (extFor(h).invite || {}).ev || ''; if (/^到職日期提醒/.test(oev)) chips.push(chip(`104 報到：${oev.replace('到職日期提醒', '')}`, evCls(oev)));
     if (rs && rs.offer) chips.push(chip(`Offer ${rs.offer}`, rs.offer === '已寄出' ? 'ok' : /未寄送/.test(rs.offer) ? 'warn' : ''));
     if (rs && rs.pdf) acts.push(`<a class="btn sm" href="${esc(rs.pdf)}" target="_blank" rel="noopener">Offer PDF ↗</a>`);
