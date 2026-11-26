@@ -185,7 +185,8 @@ function norm(id, d){
     ivAt: typeof d.ivAt === 'number' ? d.ivAt : null, ivBy:str(d.ivBy),
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
-    crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null
+    crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null,
+    link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80)} : null
   };
 }
 function normForm(f){
@@ -270,7 +271,8 @@ function extFor(h){
   return x;
 }
 /** 這列試算表資料已經是看板上的人了嗎（姓名相同、日期相近） */
-const rowHired = r => (R.hireByName.get(normName(r.name)) || []).some(h => !isDate(rowDay(r)) || near(hireDay(h), rowDay(r)));
+const rowHired = r => (r.ob && [...S.hires.values()].some(h => h.link104 && (h.link104.inv === r.ob.id || (h.link104.ref && h.link104.ref === r.ob.to.ref))))   // 從邀約連結填資料的人（不怕同名）
+  || (R.hireByName.get(normName(r.name)) || []).some(h => !isDate(rowDay(r)) || near(hireDay(h), rowDay(r)));
 const screenTaken = r => rowHired(r) || R.invite.some(i => (r.cv && i.cv === r.cv) || (normName(i.name) === normName(r.name) && near(rowDay(i), rowDay(r))));
 /* 104「聯絡訊息」的事件進度（試算表「面試邀約」的「104事件進度」欄）優先；沒有這一欄或空白時看「邀約結果」 */
 const EV_CANCEL = /^(無意願|面試婉拒|面試取消|意願已取消)$/;
@@ -1096,7 +1098,7 @@ function cardHTML(h){
   if (h.stage === 'interview') {
     const inv = extFor(h).invite, ivD = h.interviewDate || (inv && inv.ivD) || '', ivT = h.interviewDate ? h.interviewTime : (inv && inv.ivT) || '';
     if (ivD) chips.push(ivD === today() ? chip(`今天 ${ivT} 面試`, 'warn') : chip(`面試 ${md(ivD)}${ivT ? ' ' + ivT : ''}`));
-    if (h.source === 'web') chips.push(chip('線上應徵', 'ok'));
+    if (h.source === 'web') chips.push(chip(h.link104 ? '線上應徵・104 邀約' : '線上應徵', 'ok'));
     else if (h.formAt) chips.push(chip(`填表 ${md(tsDate(h.formAt))}`));
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
@@ -1104,6 +1106,7 @@ function cardHTML(h){
     const iev = (extFor(h).invite || {}).ev || ''; if (/婉拒|取消|無意願/.test(iev)) chips.push(evChip(iev));
     const jb = h.crit.ok.length ? jobFor(h) : null;
     if (jb) { const c = critCount(h, jb); chips.push(chip(`條件 ${c.n}/${c.of}`, c.of && c.n / c.of >= 0.8 ? 'ok' : '')); }
+    if (h.link104 && h.link104.cv) acts.push(`<a class="btn sm ghost" href="${esc(h.link104.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>`);
     if (canW) acts.push(
       `<button class="btn sm" type="button" data-act="comment" data-id="${id}">${h.comment ? '查看評語' : '填寫評語'}</button>`,
       `<button class="btn sm primary" type="button" data-act="hire" data-id="${id}">錄取</button>`,
@@ -1838,7 +1841,9 @@ function sendOb(manual){
   const r = OBM.row; if (!r || !canEdit()) return;
   const type = OBM.type === 'reject' ? (OBM.mode === 'skip' ? 'skip' : 'thanks') : OBM.type;
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
-  const text = type === 'skip' ? '' : val('ob-text'), job = val('ob-job') || r.job || '';
+  const obId = rid('ob');
+  // 訊息裡的線上應徵連結加上這次的代碼（apply.html?i=…）：應徵者填完資料，看板就知道是 104 上的哪一位
+  const text = type === 'skip' ? '' : (r.cv ? val('ob-text').split(APPLY_URL).map((part, i) => i && !/^[?#\w]/.test(part) ? '?i=' + obId + part : part).join(APPLY_URL) : val('ob-text')), job = val('ob-job') || r.job || '';
   const room = type === 'chat' && r.chat ? {id:r.chat.id, jobNo:r.chat.jobNo, pId:r.chat.pId} : null;
   const err = type === 'skip' ? '' : !text ? '請填寫內容。' : text.length > 1000 ? '內容最多 1000 字（104 的上限）。'
     : /\{\{[^}]*\}\}/.test(text) ? '內容裡還有 {{…}} 沒有改，請換成實際內容。' : type === 'invite' && !job ? '請填 104 通知職務。' : type === 'chat' && !room ? '找不到這位應徵者的 104 聊聊對話。' : '';
@@ -1846,7 +1851,7 @@ function sendOb(manual){
   if (err) { OBM.err = err; renderOb(false); return; }
   const days = Math.min(14, Math.max(1, parseInt(val('ob-days'), 10) || S.cfg.replyDays));
   const how = manual && type !== 'skip' ? manualSend(text, r.cv, type) : '';   // 要在按鈕的點擊裡複製、開分頁
-  const rec = {id:rid('ob'), type, status: type === 'skip' ? 'done' : how ? 'sent' : 'queued', ...(how ? {via:'manual', sentAt:Date.now(), result:'在 104 手動送出'} : {}), to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r), ...(room ? {room} : {})}, text,
+  const rec = {id:obId, type, status: type === 'skip' ? 'done' : how ? 'sent' : 'queued', ...(how ? {via:'manual', sentAt:Date.now(), result:'在 104 手動送出'} : {}), to:{name:r.name, job:r.job || '', cv:r.cv || '', ref:refOf(r), ...(room ? {room} : {})}, text,
     opts:{job, place: val('ob-place') || S.cfg.place, contactName: val('ob-cname') || S.cfg.contactName, contactPhone: val('ob-cphone') || S.cfg.contactPhone, replyDays: days},
     createdAt:Date.now(), createdBy:myName()};
   ST.save('outbox', rec);

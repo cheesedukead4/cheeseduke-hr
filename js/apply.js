@@ -6,6 +6,7 @@
 (function () {
 'use strict';
 const URL_ = ((window.HR_CLOUD || {}).url || '').trim();
+const INV = (new URLSearchParams(location.search).get('i') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);   // 看板邀約連結帶的代碼：對到 104 上的哪一位
 const $ = s => document.querySelector(s);
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const WD = '日一二三四五六';
@@ -171,7 +172,7 @@ async function submit(){
   st.busy = true; const btn = $('#go'); btn.disabled = true; btn.textContent = '送出中…';
   try {
     const r = await fetch(URL_, {method:'POST', redirect:'follow', cache:'no-store', headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action:'apply', slotId:st.slotId, website:$('#f-website').value, form})});
+      body:JSON.stringify({action:'apply', slotId:st.slotId, website:$('#f-website').value, inv:INV, form})});
     const j = await r.json();
     if (j.ok) { st.done = {date:(j.slot || {}).date || '', time:(j.slot || {}).time || '', name:form.name}; render(); window.scrollTo(0, 0); return; }
     if (j.error === 'slot_taken') {
