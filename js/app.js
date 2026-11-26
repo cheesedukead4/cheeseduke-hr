@@ -799,6 +799,24 @@ function decide(id, hired){
   const h = S.hires.get(id); if (!h || !canEdit()) return;
   saveHire(id, r => { r.stage = hired ? 'confirm' : 'rejected'; r.result = hired ? 'hired' : 'rejected'; r.steps = obj(r.steps); r.steps.interview = {at:Date.now(), by:myName()}; });
   toast(hired ? `${nm(h)} 已錄取，移到「確認入職」` : `${nm(h)} 已標記為未錄取`, () => backTo(id, 'interview'));
+  if (hired) { pullFromStore(); hireLetter(id); }   // 錄取後馬上打開錄取通知（帶好「錄取通知」範本），確認後由 104 小幫手送出
+}
+/* ---------- 錄取通知：用 104 聊聊（找不到聊聊就用 104 訊息；都沒有就複製）傳「錄取通知」範本 ---------- */
+function hireLetterRef(h){ return (h.link104 && h.link104.cv) || ('row:hire:' + h.id); }
+function hireLetterText(h){
+  const t = (S.tpl.find(x => x.id === 'tpl-offer') || {}).text || '{{姓名}}您好：\n恭喜您！經過面試評估後，我們很高興通知您，您已通過本次甄選，誠摯邀請您加入{{公司名稱}}團隊。\n\n【錄取資訊】\n職務：{{職缺}}\n報到日期：{{報到日期}}\n報到時間：{{報到時間}}\n請於收到通知後回覆是否接受錄取，以利後續報到安排。';
+  const name = (h.link104 && h.link104.name) || h.name, job = ((h.link104 && h.link104.job) || h.position || '').replace(/【[^】]*】/g, '').trim();
+  const ps = planStart(h);
+  return fillTpl(t, {'姓名': name, '職缺': job, '公司名稱': S.cfg.company, '報到日期': ps ? slash(ps) : '', '報到時間': ps ? S.cfg.reportTime : '', '面試地點': S.cfg.place});
+}
+function hireLetter(id){
+  const h = S.hires.get(id); if (!h || !canEdit()) return;
+  const name = (h.link104 && h.link104.name) || h.name, job = (h.link104 && h.link104.job) || h.position || '', cv = (h.link104 && h.link104.cv) || '';
+  const ch = chatFor({name, job}), text = hireLetterText(h);
+  const row = {id:'hire:' + id, name, job, cv, preset:text};
+  if (ch) openOb('chat', Object.assign(row, {chat:ch}));
+  else if (is104(cv)) openOb('message', row);
+  else { copyText(text); toast(`找不到 ${name} 的 104 聊聊或履歷：錄取通知已複製，請用 LINE 或簡訊傳`, null, 8000); }
 }
 /** 錄取後確認要不要來：要 → Offer；不要 → 婉拒入職 */
 function confirmJoin(id, yes){
@@ -1118,6 +1136,8 @@ function cardHTML(h){
     if (s.at) chips.push(chip(`${md(tsDate(s.at))} 錄取`));
     const dc = sheetDecChip(h); if (dc) chips.push(dc);
     if (planStart(h)) chips.push(startChip(h));
+    const lo = obFor(hireLetterRef(h)); if (lo && lo.createdAt >= (s.at || 0) - 60000 && lo.type !== 'skip') chips.push(chip(`錄取通知・${{queued:'排隊中', sending:'送出中', sent:'已送出', failed:'送出失敗', canceled:'已取消'}[lo.status] || ''}`, lo.status === 'sent' ? 'ok' : lo.status === 'failed' ? 'danger' : 'warn'));
+    if (canW && !(lo && lo.createdAt >= (s.at || 0) - 60000 && ['queued', 'sending', 'sent'].includes(lo.status))) acts.push(`<button class="btn sm" type="button" data-act="hire-letter" data-id="${id}">傳錄取通知</button>`);
     if (canW) acts.push(
       `<button class="btn sm primary" type="button" data-act="join-yes" data-id="${id}">要，寄 Offer</button>`,
       `<button class="btn sm" type="button" data-act="join-no" data-id="${id}">不要</button>`);
@@ -2664,6 +2684,7 @@ $('#board').addEventListener('click', e => {
   else if (act === 'advance') advance(id);
   else if (act === 'join-yes') confirmJoin(id, true);
   else if (act === 'join-no') confirmJoin(id, false);
+  else if (act === 'hire-letter') hireLetter(id);
 });
 $('#overview-view').addEventListener('click', e => {
   const mg = e.target.closest('[data-mn-go]');
