@@ -215,6 +215,7 @@ function pullFromStore(){
   S.tpl = tp.filter(t => t && t.id !== '_cfg').map(normTpl).filter(Boolean).sort((a, b) => a.order - b.order);
   buildRecruit();
   buildManual();
+  if (!obFixQueued) { obFixQueued = true; setTimeout(() => { obFixQueued = false; obFixFromChat(); }, 0); }
   S.loaded = !!ST.status().loaded;
 }
 
@@ -316,6 +317,23 @@ const OB_LABEL = {invite:'邀約面試', thanks:'感謝函', message:'訊息', s
 const TPL_KINDS = [['invite', '邀約面試'], ['thanks', '感謝函／婉拒'], ['message', '一般訊息']];
 const RN = {configured:false, lastSeen:0, login:'', version:'', note:'', chatAt:0};   // 自動送出程式的狀態（formSync 帶回）
 const AIS = {configured:null, model:''};
+/** 小幫手按了確認卻沒等到結果（回報「送出失敗」），但 104 聊聊已經看得到這次的邀約事件 → 其實有送出，改成「已送出」，免得重複邀約 */
+let obFixQueued = false;
+function obFixFromChat(){
+  if (!canEdit() || !S.chat.items.length) return;
+  const fix = [];
+  for (const o of S.outbox) {
+    if (o.type !== 'invite' || o.status !== 'failed') continue;
+    const ch = chatFor({name:o.to.name, job:o.to.job});
+    if (!ch || ![1, 2].includes(ch.ev)) continue;
+    const t = Date.parse(String(ch.time).replace(' ', 'T') + '+08:00');
+    if (!(t >= (o.createdAt || 0) - 60000)) continue;
+    const raw = ST.get('outbox', o.id);
+    if (!raw || raw.status !== 'failed') continue;
+    fix.push(Object.assign({}, raw, {status:'sent', sentAt: t, result:'104 聊聊看得到這次的邀約（' + chatEv(ch) + '），已改成「已送出」', updatedAt: Date.now(), updatedBy: myName()}));
+  }
+  if (fix.length) { ST.saveMany('outbox', fix); toast(`${fix.map(x => x.to && x.to.name).join('、')} 的邀約其實已經送出（104 聊聊看得到），已改成「已送出」`); }
+}
 function normOb(d){
   d = obj(d);
   if (d.id == null || !OB_TYPES.includes(d.type)) return null;
