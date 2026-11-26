@@ -31,7 +31,7 @@ const AU = window.HRAuth, ST = window.HRStore;
 const STAGES = [
   {key:'x_screen',    board:'recruit',  n:1, title:'履歷篩選',    hint:'104 收到、看板已評分分級的履歷'},
   {key:'x_invite',    board:'recruit',  n:2, title:'邀約中',      hint:'已送出邀約，等應徵者選時間'},
-  {key:'x_booked',    board:'recruit',  n:3, title:'已約面試',    hint:'舊流程（Google 預約）選好時間的人；看板邀約選好時間的直接進「面試」'},
+  {key:'x_booked',    board:'recruit',  n:3, title:'已約面試',    hint:'在 104 按「我有興趣」、等選面試時段的人；選好時段後會進「面試」'},
   {key:'interview',   board:'recruit',  n:4, title:'面試',        hint:'面試後決定錄取或不錄取'},
   {key:'confirm',     board:'recruit',  n:5, title:'確認入職',    hint:'錄取後確認要不要來'},
   {key:'offer',       board:'recruit',  n:6, title:'Offer',       hint:'寄 Offer，等報到'},
@@ -70,7 +70,7 @@ const ADV_LABEL = {offer:'已報到 →', docs:'證件齊全，下一步', apoll
 const EMPTY = {
   x_screen:'最近 14 天沒有新的履歷',
   x_invite:'沒有等回覆的邀約',
-  x_booked:'沒有已約面試、還沒填人事資料表的人',
+  x_booked:'沒有按「我有興趣」、還在等選時段的人',
   interview:'人事資料表進來的應徵者會出現在這裡',
   confirm:'錄取的人會出現在這裡',
   offer:'確認要來的人會出現在這裡',
@@ -277,6 +277,7 @@ const EV_CANCEL = /^(無意願|面試婉拒|面試取消|意願已取消)$/;
 const inviteDone = r => /^(感謝函|到職日期提醒)/.test(r.ev);   // 已經過了面試這一關，不放在前三欄
 const inviteCancel = r => EV_CANCEL.test(r.ev) || /取消/.test(r.st);
 const inviteBooked = r => !inviteCancel(r) && !inviteDone(r) && (r.ev === '面試同意' || /^已預約/.test(r.st));
+const obWantsNext = r => /^(有意願|面試同意)$/.test(r.ev);   // 看板邀約的人在 104 按了「我有興趣」→ 往下一欄（等選面試時段）
 const inviteWaiting = r => !inviteCancel(r) && !inviteDone(r) && !inviteBooked(r);
 const evCls = ev => /同意|有意願/.test(ev) ? 'ok' : /未回覆/.test(ev) ? 'warn' : /婉拒|取消|無意願/.test(ev) ? 'danger' : '';
 const evChip = ev => ev ? chip(`104：${ev}`, evCls(ev)) : '';
@@ -292,12 +293,11 @@ function extItems(key, useQ = true){
   }
   if (key === 'x_invite') {
     const floor = addDays(t, -RC_DAYS.invite);
-    const yes = r => /^(有意願|面試同意)$/.test(r.ev) ? 0 : 1;
-    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q).filter(r => !inviteCancel(r)))
-      .sort((a, b) => yes(a) - yes(b) || (a.at < b.at ? 1 : -1));
+    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q).filter(r => !inviteCancel(r) && !obWantsNext(r)))
+      .sort((a, b) => (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_booked') {
-    return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14)))
+    return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14))).concat(obInviteRows(q).filter(obWantsNext))
       .sort((a, b) => ((a.ivD || '9999') + a.ivT) < ((b.ivD || '9999') + b.ivT) ? -1 : 1);
   }
   if (key === 'x_cancel') {
@@ -354,8 +354,12 @@ function normCfg(d){
   const s = (v, n, dft) => typeof v === 'string' ? v.slice(0, n) : dft;
   return {company:s(d.company, 40, '起士公爵'), place:s(d.place, 120, ''), contactName:s(d.contactName, 40, ''), contactPhone:s(d.contactPhone, 40, ''),
     reportTime:s(d.reportTime, 20, '09:00'), reportPlace:s(d.reportPlace, 120, ''), reportNote:s(d.reportNote, 300, ''),
-    replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3};
+    replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3,
+    autoYes: d.autoYes !== false, autoNo: d.autoNo !== false};
 }
+/* 應徵者回覆邀約（104 詢問意願的按鈕）後的自動回覆：雲端後端在小幫手送來聊聊清單時排進寄件匣，範本在「訊息範本」修改 */
+const REPLY_TPLS = [{id:'tpl-reply-yes', kind:'message', title:'有興趣後的回覆（自動）', text:"{{姓名}}您好，謝謝您回覆有興趣！\n\n請點下面的連結，選擇方便的面試時段並填寫基本資料：\n{{應徵連結}}\n\n▸ 面試地點：{{面試地點}}\n若時段都無法配合，歡迎直接在這裡回覆方便的時間，我們會協助安排。\n\n{{公司名稱}} 人資"},
+  {id:'tpl-thanks-decline', kind:'thanks', title:'婉拒邀約後的感謝函（自動）', text:"您好：\n感謝您撥冗回覆，也謝謝您對{{公司名稱}}「{{職缺}}」職缺的關注。\n我們尊重您的決定，也會妥善保留您的資料；未來若有更合適的機會，期待能再與您聯繫。\n祝 順心"}];
 /** 寄件匣用來對人的鍵：104 履歷連結（沒有就用試算表那一列的 id） */
 const refOf = r => r.ob ? r.ob.to.ref : (r.cv || ('row:' + r.id));
 function obFor(ref){ let best = null; for (const o of S.outbox) if (o.to.ref === ref && (!best || o.createdAt > best.createdAt)) best = o; return best; }
@@ -1058,7 +1062,8 @@ function extCardHTML(r, key){
     if (r.ivD) chips.push(r.ivD === t ? chip(`今天 ${r.ivT} 面試`, 'warn') : chip(`面試 ${md(r.ivD)}${r.ivT ? ' ' + r.ivT : ''}`, r.ivD < t ? 'warn' : ''));
     else if (r.at && r.src !== 'outbox') chips.push(chip(`${shortDT(r.at)} 送出邀約`));
     if (r.ev) chips.push(evChip(r.ev));
-    if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
+    if (key === 'x_booked' && r.src === 'outbox') chips.push(chip('等選面試時段', 'warn'));
+    else if (key === 'x_booked') chips.push(r.formFill === '已填寫' ? chip('人事表已填', 'ok') : r.formSt === '已發送' ? chip('人事表已發送') : chip(r.formSt ? `人事表${r.formSt}` : '人事表未發送', 'warn'));
     if (r.plat) chips.push(chip(r.plat));
   }
   const o = r.ob || obFor(refOf(r)), acts = [], ch = chatFor(r);
@@ -1950,6 +1955,11 @@ function obAdminHTML(){
     <div class="grid2">${q('cfg-company', '公司名稱', c.company, 'maxlength="40"')}${q('cfg-place', '面試地點', c.place, 'maxlength="120"')}${q('cfg-cname', '聯絡窗口', c.contactName, 'maxlength="40"')}${q('cfg-cphone', '聯絡電話', c.contactPhone, 'maxlength="40"')}${q('cfg-days', '回覆期限（天內）', String(c.replyDays), 'type="number" min="1" max="14"')}</div>
     <h3 class="fm-h">報到預設值 <span class="h-count">「傳報到連結」會帶入</span></h3>
     <div class="grid2">${q('cfg-rtime', '報到時間', c.reportTime, 'maxlength="20" placeholder="例如：09:00"')}${q('cfg-rplace', '報到地點（空白＝面試地點）', c.reportPlace, 'maxlength="120"')}${q('cfg-rnote', '報到提醒', c.reportNote, 'maxlength="300" placeholder="例如：請攜帶印章、穿著輕便服裝"')}</div>
+    <h3 class="fm-h">應徵者回覆邀約後 <span class="h-count">104「詢問意願」的按鈕</span></h3>
+    <p class="muted">應徵者在 104 按了按鈕，104 小幫手約 1 分鐘內會讀到，看板照下面的設定自動處理（每次邀約只送一次）。要送的文字在下面「訊息範本」修改。</p>
+    <label class="chk"><input type="checkbox" id="cfg-auto-yes" class="ob-cfg"${c.autoYes ? ' checked' : ''}> 按「我有興趣」：移到「已約面試」等選時段，並用 104 聊聊自動傳「有興趣後的回覆（自動）」</label>
+    <label class="chk"><input type="checkbox" id="cfg-auto-no" class="ob-cfg"${c.autoNo ? ' checked' : ''}> 按「婉拒」：移到「婉拒或取消」，並自動送「婉拒邀約後的感謝函（自動）」（104 感謝函）</label>
+    ${REPLY_TPLS.some(t => !S.tpl.some(x => x.id === t.id)) ? '<div class="fl-row"><span class="muted">這兩份範本還沒建立（沒建立時會用預設文字）。</span><button class="btn sm" type="button" data-u="reply-tpl-make">建立範本，讓我修改文字</button></div>' : ''}
     <h3 class="fm-h">訊息範本 <button class="btn sm" type="button" data-u="te-add">＋ 新增範本</button></h3>
     ${tpls || '<p class="rt-empty">還沒有範本。</p>'}
     ${TE.msg ? `<p class="imp-msg" role="status">${esc(TE.msg)}</p>` : ''}
@@ -1966,7 +1976,8 @@ function saveCfg(){
   const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const cur = ST.get('tpl', '_cfg');
   const next = Object.assign(cur ? JSON.parse(JSON.stringify(cur)) : {id:'_cfg'}, {company:g('cfg-company') || '起士公爵', place:g('cfg-place'), contactName:g('cfg-cname'), contactPhone:g('cfg-cphone'),
-    replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), reportTime:g('cfg-rtime'), reportPlace:g('cfg-rplace'), reportNote:g('cfg-rnote'), updatedAt:Date.now(), updatedBy:myName()});
+    replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), reportTime:g('cfg-rtime'), reportPlace:g('cfg-rplace'), reportNote:g('cfg-rnote'),
+    autoYes: !!(document.getElementById('cfg-auto-yes') || {}).checked, autoNo: !!(document.getElementById('cfg-auto-no') || {}).checked, updatedAt:Date.now(), updatedBy:myName()});
   ST.save('tpl', next);
 }
 
@@ -2827,6 +2838,12 @@ $('#users-view').addEventListener('click', async e => {
   if (act === 'rk-new') { if (RN.configured) { RK.confirm = true; renderUsers(); } else rkNew(); }
   else if (act === 'rk-new-yes') rkNew();
   else if (act === 'rk-cancel') { RK.confirm = false; renderUsers(); }
+  else if (act === 'reply-tpl-make') {
+    let n = S.tpl.reduce((m, t) => Math.max(m, t.order), 0);
+    const add = REPLY_TPLS.filter(t => !S.tpl.some(x => x.id === t.id)).map(t => Object.assign({}, t, {order: ++n, updatedAt:Date.now(), updatedBy:myName()}));
+    if (add.length) { ST.saveMany('tpl', add); TE.open = add[0].id; TE.msg = '已建立，可以直接修改文字後按「儲存」。'; }
+    pullFromStore(); renderUsers();
+  }
   else if (act === 'te-add') {
     const nid = rid('t');
     ST.save('tpl', {id:nid, kind:'message', title:'新範本', text:'', order:S.tpl.reduce((m, t) => Math.max(m, t.order), 0) + 1, updatedAt:Date.now(), updatedBy:myName()});

@@ -155,6 +155,8 @@ img{max-width:100%}
 .stamp.lg{position:static;font-size:13px;padding:3px 6px 3px 8px}
 .rej{border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
 .rej summary{cursor:pointer;font-size:12.5px;color:var(--ink-2);padding:2px 4px}
+label.chk{display:flex;gap:8px;align-items:flex-start;font-size:14px;line-height:1.5;margin:6px 0;cursor:pointer}
+label.chk input{width:18px;height:18px;margin:2px 0 0;flex:none;accent-color:var(--accent)}
 .rej .fold-cards{display:flex;flex-direction:column;gap:8px;margin:6px 0 0}
 .rej ul{list-style:none;margin:6px 0 0;padding:0 4px;display:flex;flex-direction:column;gap:4px}
 .rej li{display:flex;gap:8px;align-items:baseline;font-size:13px;min-width:0}
