@@ -1095,11 +1095,13 @@ function extCardHTML(r, key){
 function cardHTML(h){
   const id = esc(h.id), canW = canEdit();
   const chips = [], acts = [];
+  // 從看板邀約連結填資料的人：填的姓名和 104 不一樣時標出來；面試到 Offer 都留著「104 履歷」
+  if (h.link104 && h.link104.name && normName(h.link104.name) !== normName(h.name)) chips.push(chip(`104 上的姓名：${h.link104.name}`, 'warn'));
+  if (h.link104 && h.link104.cv && ['interview', 'confirm', 'offer'].includes(h.stage)) acts.push(`<a class="btn sm ghost" href="${esc(h.link104.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>`);
   if (h.stage === 'interview') {
     const inv = extFor(h).invite, ivD = h.interviewDate || (inv && inv.ivD) || '', ivT = h.interviewDate ? h.interviewTime : (inv && inv.ivT) || '';
     if (ivD) chips.push(ivD === today() ? chip(`今天 ${ivT} 面試`, 'warn') : chip(`面試 ${md(ivD)}${ivT ? ' ' + ivT : ''}`));
     if (h.source === 'web') chips.push(chip(h.link104 ? '線上應徵・104 邀約' : '線上應徵', 'ok'));
-    if (h.link104 && h.link104.name && normName(h.link104.name) !== normName(h.name)) chips.push(chip(`104 上的姓名：${h.link104.name}`, 'warn'));   // 填的姓名和 104 不一樣（打錯或測試）
     else if (h.formAt) chips.push(chip(`填表 ${md(tsDate(h.formAt))}`));
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
@@ -1107,7 +1109,6 @@ function cardHTML(h){
     const iev = (extFor(h).invite || {}).ev || ''; if (/婉拒|取消|無意願/.test(iev)) chips.push(evChip(iev));
     const jb = h.crit.ok.length ? jobFor(h) : null;
     if (jb) { const c = critCount(h, jb); chips.push(chip(`條件 ${c.n}/${c.of}`, c.of && c.n / c.of >= 0.8 ? 'ok' : '')); }
-    if (h.link104 && h.link104.cv) acts.push(`<a class="btn sm ghost" href="${esc(h.link104.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>`);
     if (canW) acts.push(
       `<button class="btn sm" type="button" data-act="comment" data-id="${id}">${h.comment ? '查看評語' : '填寫評語'}</button>`,
       `<button class="btn sm primary" type="button" data-act="hire" data-id="${id}">錄取</button>`,
