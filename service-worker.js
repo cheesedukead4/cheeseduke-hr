@@ -1,6 +1,6 @@
 /* 離線快取：網站檔案先走網路，4 秒沒回應或失敗才用快取。雲端資料請求不經過快取。
    修改網站檔案後，把 CACHE 的版本號加 1；新增檔案時也要加進 ASSETS。 */
-var CACHE = 'hr-app-v34';
+var CACHE = 'hr-app-v35';
 var NET_TIMEOUT_MS = 4000;
 var ASSETS = [
   './', './index.html', './config.js', './manifest.webmanifest',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', function (e) {
   if (url.origin !== self.location.origin) return;
   var nav = req.mode === 'navigate';
   if (url.search && !nav) return;
-  if (/\/(apply|onboard|reply|invite)\.html$/.test(url.pathname) || /(apply|onboard|reply|invite)\.(js|css)$/.test(url.pathname)) return; // 應徵頁、報到頁、錄取回覆頁、邀約回覆頁給應徵者和新人用，不經過 App 的離線快取
+  if (/\/(apply|onboard|reply|invite|ok)\.html$/.test(url.pathname) || /(apply|onboard|reply|invite|ok)\.(js|css)$/.test(url.pathname)) return; // 應徵頁、報到頁、錄取回覆頁、邀約回覆頁給應徵者和新人用，不經過 App 的離線快取
   if (nav && !/\/(index\.html)?$/.test(url.pathname)) return; // 其他頁面（隱私權政策等）也直接走網路
   e.respondWith(cachedFor(req, nav).then(function (hit) {
     var net = fetch(req, { cache: 'no-cache' }).then(function (res) {

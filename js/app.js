@@ -186,6 +186,9 @@ function norm(id, d){
     form: normForm(d.form), formAt: typeof d.formAt === 'number' ? d.formAt : null,
     docUrl: /^https:\/\/docs\.google\.com\//.test(typeof d.docUrl === 'string' ? d.docUrl : '') ? d.docUrl : '',
     crit: normCrit(d.crit), onb: normOnb(d.onb), offer: d.offer ? normOffer(d.offer) : null,
+    ivr: d.ivr && typeof d.ivr === 'object' ? {queued:!!d.ivr.queued, date:str(d.ivr.date).slice(0, 10), ans:['yes', 'no', 'change'].includes(d.ivr.ans) ? d.ivr.ans : '', ansAt:Number(d.ivr.ansAt) || 0, from:str(d.ivr.from).slice(0, 20)} : null,
+    ofc: d.ofc && /^[a-f0-9]{32}$/.test(d.ofc.t || '') ? {t:d.ofc.t, ans:['yes', 'change'].includes(d.ofc.ans) ? d.ofc.ans : '', note:str(d.ofc.note).slice(0, 200), ansAt:Number(d.ofc.ansAt) || 0} : null,
+    withdrawn: !!d.withdrawn,
     ofr: d.ofr && /^[a-f0-9]{32}$/.test(d.ofr.t || '') ? {t:d.ofr.t, exp:Number(d.ofr.exp) || 0, job:str(d.ofr.job).slice(0, 80), ans: d.ofr.ans === 'yes' || d.ofr.ans === 'no' ? d.ofr.ans : '', ansAt:Number(d.ofr.ansAt) || 0} : null,
     link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80), name:str(d.link104.name).slice(0, 40)} : null
   };
@@ -359,10 +362,11 @@ function normCfg(d){
   return {company:s(d.company, 40, '起士公爵'), place:s(d.place, 120, ''), contactName:s(d.contactName, 40, ''), contactPhone:s(d.contactPhone, 40, ''),
     reportTime:s(d.reportTime, 20, '09:00'), reportPlace:s(d.reportPlace, 120, ''), reportNote:s(d.reportNote, 300, ''),
     replyDays: Number.isInteger(d.replyDays) && d.replyDays >= 1 && d.replyDays <= 14 ? d.replyDays : 3,
-    autoYes: d.autoYes !== false, autoNo: d.autoNo !== false};
+    autoYes: d.autoYes !== false, autoNo: d.autoNo !== false, autoRemind: d.autoRemind !== false};
 }
 /* 應徵者回覆邀約（104 詢問意願的按鈕）後的自動回覆：雲端後端在小幫手送來聊聊清單時排進寄件匣，範本在「訊息範本」修改 */
 const REPLY_TPLS = [{id:'tpl-reply-yes', kind:'message', title:'有興趣後的回覆（自動）', text:"{{姓名}}您好，謝謝您回覆有興趣！\n\n請點下面的連結，選擇方便的面試時段並填寫基本資料：\n{{應徵連結}}\n\n▸ 面試地點：{{面試地點}}\n若時段都無法配合，歡迎直接在這裡回覆方便的時間，我們會協助安排。\n\n{{公司名稱}} 人資"},
+  {id:'tpl-iv-remind', kind:'message', title:'面試前一天提醒（自動）', text:"{{姓名}}您好，提醒您明天 {{面試日期}} {{面試時間}} 在{{面試地點}}面試。\n\n請點下面的連結告訴我們：會準時到、要改時間，或不方便來了：\n{{回覆連結}}\n\n期待與您見面！\n{{公司名稱}} 人資"},
   {id:'tpl-thanks-decline', kind:'thanks', title:'婉拒邀約後的感謝函（自動）', text:"您好：\n感謝您撥冗回覆，也謝謝您對{{公司名稱}}「{{職缺}}」職缺的關注。\n我們尊重您的決定，也會妥善保留您的資料；未來若有更合適的機會，期待能再與您聯繫。\n祝 順心"}];
 /** 寄件匣用來對人的鍵：104 履歷連結（沒有就用試算表那一列的 id） */
 const refOf = r => r.ob ? r.ob.to.ref : (r.cv || ('row:' + r.id));
@@ -610,7 +614,8 @@ function offerQueue(id, mode, confirmed){
 function offerChatText(h){
   const f = h.offer.f, t = (S.tpl.find(x => x.id === 'tpl-offer') || {}).text || '';
   const ctx = {'職缺': f.title, '姓名': h.name, '公司名稱': S.cfg.company, '報到日期': f.date ? slash(f.date) : '', '報到時間': f.time};
-  return (t ? fillTpl(t, ctx) : `${h.name}您好，恭喜您錄取起士公爵「${f.title}」！`) + `\n\n錄取通知書已寄到您的 Email（${f.email}），請查收並回覆是否接受錄取。`;
+  const okLink = h.ofc ? `\n\n收到後請點下面的連結，告訴我們是否會準時報到：\n${OK_URL}#t=${h.ofc.t}` : '';
+  return (t ? fillTpl(t, ctx) : `${h.name}您好，恭喜您錄取起士公爵「${f.title}」！`) + `\n\n錄取通知書已寄到您的 Email（${f.email}），請查收。` + okLink;
 }
 function rowById(id){
   if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
@@ -1135,6 +1140,9 @@ function cardHTML(h){
     const inv = extFor(h).invite, ivD = h.interviewDate || (inv && inv.ivD) || '', ivT = h.interviewDate ? h.interviewTime : (inv && inv.ivT) || '';
     if (ivD) chips.push(ivD === today() ? chip(`今天 ${ivT} 面試`, 'warn') : chip(`面試 ${md(ivD)}${ivT ? ' ' + ivT : ''}`));
     if (h.source === 'web') chips.push(chip(h.link104 ? '線上應徵・104 邀約' : '線上應徵', 'ok'));
+    if (h.ivr && h.ivr.ans === 'yes') chips.push(chip('已確認會到', 'ok'));
+    else if (h.ivr && h.ivr.ans === 'change') chips.push(chip(`應徵者改了時間${h.ivr.from ? `（原 ${md(h.ivr.from.slice(0, 10))}）` : ''}`, 'warn'));
+    else if (h.ivr && h.ivr.queued && h.ivr.date === h.interviewDate) chips.push(chip('已傳面試提醒・等回覆'));
     else if (h.formAt) chips.push(chip(`填表 ${md(tsDate(h.formAt))}`));
     if (h.rating) chips.push(chip(`評分：${RATING[h.rating]}`, h.rating === 'D' ? 'danger' : (h.rating === 'A' || h.rating === 'B') ? 'ok' : ''));
     else if (h.comment) chips.push(chip('已填評語'));
@@ -1162,6 +1170,8 @@ function cardHTML(h){
     const rs = extFor(h).result;
     chips.push(startChip(h));
     if (h.ofr && h.ofr.ans === 'yes') chips.push(chip(`新人已接受錄取 ${md(tsDate(h.ofr.ansAt))}`, 'ok'));
+    if (h.ofc && h.ofc.ans === 'yes') chips.push(chip('新人確認會準時報到', 'ok'));
+    else if (h.ofc && h.ofc.ans === 'change') chips.push(chip(`報到日要調整${h.ofc.note ? '：' + h.ofc.note : ''}`, 'warn'));
     const oev = (extFor(h).invite || {}).ev || ''; if (/^到職日期提醒/.test(oev)) chips.push(chip(`104 報到：${oev.replace('到職日期提醒', '')}`, evCls(oev)));
     if (rs && rs.offer) chips.push(chip(`Offer ${rs.offer}`, rs.offer === '已寄出' ? 'ok' : /未寄送/.test(rs.offer) ? 'warn' : ''));
     if (rs && rs.pdf) acts.push(`<a class="btn sm" href="${esc(rs.pdf)}" target="_blank" rel="noopener">Offer PDF ↗</a>`);
@@ -1206,7 +1216,7 @@ function foldHTML(key, summary, lis){
 }
 const hireLi = h => batchOn()
   ? `<li><label><input type="checkbox" class="pick-r" data-pick="${esc(h.id)}"${S.sel.has(h.id) ? ' checked' : ''}><span class="link">${esc(nm(h))}</span></label><span>${esc(h.position)}</span></li>`
-  : `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc(h.position)}</span></li>`;
+  : `<li><button class="link" type="button" data-act="open" data-id="${esc(h.id)}">${esc(nm(h))}</button><span>${esc((h.withdrawn ? '應徵者取消面試・' : '') + h.position)}</span></li>`;
 const extLi = (r, note) => `<li>${r.cv ? `<a class="link" href="${esc(r.cv)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : `<b>${esc(r.name)}</b>`}<span>${esc(note || r.job)}</span></li>`;
 function colExtraHTML(key, mNum){
   if (key === 'interview') { const rej = rejectedItems(); return foldHTML('rej', `未錄取・${mNum} 月 ${rej.length} 位`, rej.map(hireLi)); }
@@ -1252,6 +1262,7 @@ function renderBoard(){
 const APPLY_URL = new URL('apply.html', location.href).href.replace(/[?#].*$/, '');
 const ONBOARD_URL = new URL('onboard.html', location.href).href.replace(/[?#].*$/, '');
 const INVITE_URL = new URL('invite.html', location.href).href.replace(/[?#].*$/, '');
+const OK_URL = new URL('ok.html', location.href).href.replace(/[?#].*$/, '');
 const REPLY_URL = new URL('reply.html', location.href).href.replace(/[?#].*$/, '');
 const SL = {confirm:null, msg:'', msgErr:false, wk:null, dirty:false, copyFrom:null};
 const WD_ = '日一二三四五六';
@@ -1990,7 +2001,7 @@ function obAdminHTML(){
       <div class="job-ed-in">
         <div class="grid2"><div class="f"><label for="te-title-${id}">名稱</label><input id="te-title-${id}" data-te="title" data-id="${id}" value="${esc(v('title'))}" maxlength="40"></div>
         <div class="f"><label for="te-kind-${id}">用在</label><select class="inp" id="te-kind-${id}" data-te="kind" data-id="${id}">${TPL_KINDS.map(([k, l]) => `<option value="${k}"${v('kind') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
-        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}；錄取通知另有 {{報到日期}} {{報到時間}} {{回覆連結}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
+        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}；錄取通知另有 {{報到日期}} {{報到時間}} {{回覆連結}}；面試前一天提醒另有 {{面試日期}} {{面試時間}} {{回覆連結}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
         <div class="fl-row">${btns}</div>
       </div></details>`;
   }).join('');
@@ -2011,7 +2022,8 @@ function obAdminHTML(){
     <p class="muted">應徵者在 104 按了按鈕，104 小幫手約 1 分鐘內會讀到，看板照下面的設定自動處理（每次邀約只送一次）。要送的文字在下面「訊息範本」修改。</p>
     <label class="chk"><input type="checkbox" id="cfg-auto-yes" class="ob-cfg"${c.autoYes ? ' checked' : ''}> 按「我有興趣」：移到「已約面試」等選時段，並用 104 聊聊自動傳「有興趣後的回覆（自動）」</label>
     <label class="chk"><input type="checkbox" id="cfg-auto-no" class="ob-cfg"${c.autoNo ? ' checked' : ''}> 按「婉拒」：移到「婉拒或取消」，並自動送「婉拒邀約後的感謝函（自動）」（104 感謝函）</label>
-    ${REPLY_TPLS.some(t => !S.tpl.some(x => x.id === t.id)) ? '<div class="fl-row"><span class="muted">這兩份範本還沒建立（沒建立時會用預設文字）。</span><button class="btn sm" type="button" data-u="reply-tpl-make">建立範本，讓我修改文字</button></div>' : ''}
+    <label class="chk"><input type="checkbox" id="cfg-auto-remind" class="ob-cfg"${c.autoRemind ? ' checked' : ''}> 面試前一天 10 點後自動傳「面試前一天提醒（自動）」，附「會準時到／要改時間／不來了」按鈕</label>
+    ${REPLY_TPLS.some(t => !S.tpl.some(x => x.id === t.id)) ? '<div class="fl-row"><span class="muted">自動回覆的範本還沒建立完整（沒建立時會用預設文字）。</span><button class="btn sm" type="button" data-u="reply-tpl-make">建立範本，讓我修改文字</button></div>' : ''}
     <h3 class="fm-h">訊息範本 <button class="btn sm" type="button" data-u="te-add">＋ 新增範本</button></h3>
     ${tpls || '<p class="rt-empty">還沒有範本。</p>'}
     ${TE.msg ? `<p class="imp-msg" role="status">${esc(TE.msg)}</p>` : ''}
@@ -2029,7 +2041,7 @@ function saveCfg(){
   const cur = ST.get('tpl', '_cfg');
   const next = Object.assign(cur ? JSON.parse(JSON.stringify(cur)) : {id:'_cfg'}, {company:g('cfg-company') || '起士公爵', place:g('cfg-place'), contactName:g('cfg-cname'), contactPhone:g('cfg-cphone'),
     replyDays: Math.min(14, Math.max(1, parseInt(g('cfg-days'), 10) || 3)), reportTime:g('cfg-rtime'), reportPlace:g('cfg-rplace'), reportNote:g('cfg-rnote'),
-    autoYes: !!(document.getElementById('cfg-auto-yes') || {}).checked, autoNo: !!(document.getElementById('cfg-auto-no') || {}).checked, updatedAt:Date.now(), updatedBy:myName()});
+    autoYes: !!(document.getElementById('cfg-auto-yes') || {}).checked, autoNo: !!(document.getElementById('cfg-auto-no') || {}).checked, autoRemind: !!(document.getElementById('cfg-auto-remind') || {}).checked, updatedAt:Date.now(), updatedBy:myName()});
   ST.save('tpl', next);
 }
 
