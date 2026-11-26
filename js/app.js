@@ -1151,7 +1151,8 @@ function cardHTML(h){
     if (planStart(h)) chips.push(startChip(h));
     const lo = obFor(hireLetterRef(h)); if (lo && lo.createdAt >= (s.at || 0) - 60000 && lo.type !== 'skip') chips.push(chip(`錄取通知・${{queued:'排隊中', sending:'送出中', sent:'已送出', failed:'送出失敗', canceled:'已取消'}[lo.status] || ''}`, lo.status === 'sent' ? 'ok' : lo.status === 'failed' ? 'danger' : 'warn'));
     if (h.ofr && !h.ofr.ans) chips.push(chip('等新人按接受／婉拒', 'warn'));
-    if (canW && !(lo && lo.createdAt >= (s.at || 0) - 60000 && ['queued', 'sending', 'sent'].includes(lo.status))) acts.push(`<button class="btn sm" type="button" data-act="hire-letter" data-id="${id}">傳錄取通知</button>`);
+    const sentLetter = lo && lo.createdAt >= (s.at || 0) - 60000 && ['queued', 'sending', 'sent'].includes(lo.status);
+    if (canW && (!sentLetter || !h.ofr)) acts.push(`<button class="btn sm" type="button" data-act="hire-letter" data-id="${id}">${sentLetter ? '補傳接受／婉拒按鈕' : '傳錄取通知'}</button>`);   // 舊版錄取通知沒有回覆連結，可以補傳
     if (canW) acts.push(
       `<button class="btn sm primary" type="button" data-act="join-yes" data-id="${id}">要，寄 Offer</button>`,
       `<button class="btn sm" type="button" data-act="join-no" data-id="${id}">不要</button>`);
