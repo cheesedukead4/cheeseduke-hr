@@ -369,6 +369,7 @@ function normCfg(d){
 }
 /* 應徵者回覆邀約（邀約連結的按鈕；以前 104 詢問意願的按鈕也算）後的自動回覆：雲端後端在小幫手送來聊聊清單時排進寄件匣，範本在「訊息範本」修改 */
 const REPLY_TPLS = [{id:'tpl-reply-yes', kind:'message', title:'有興趣後的回覆（自動）', text:"{{姓名}}您好，謝謝您回覆有興趣！\n\n請點下面的連結，選擇方便的面試時段並填寫基本資料：\n{{應徵連結}}\n\n▸ 面試地點：{{面試地點}}\n若時段都無法配合，歡迎直接在這裡回覆方便的時間，我們會協助安排。\n\n{{公司名稱}} 人資"},
+  {id:'tpl-offer-notice', kind:'message', title:'Offer 寄出後的聊聊通知', text:"{{姓名}}您好，您的錄取通知書（Offer）已寄到 Email（{{Email}}），請查收。\n\n收到後請點下面的連結，告訴我們是否會準時報到；報到日需要調整，也可以在連結裡選擇想改的日期：\n{{回覆連結}}\n\n期待您的加入！\n{{公司名稱}} 人資"},
   {id:'tpl-iv-remind', kind:'message', title:'面試前一天提醒（自動）', text:"{{姓名}}您好，提醒您明天 {{面試日期}} {{面試時間}} 在{{面試地點}}面試。\n\n請點下面的連結告訴我們：會準時到、要改時間，或不方便來了：\n{{回覆連結}}\n\n期待與您見面！\n{{公司名稱}} 人資"},
   {id:'tpl-thanks-decline', kind:'thanks', title:'婉拒邀約後的感謝函（自動）', text:"您好：\n感謝您撥冗回覆，也謝謝您對{{公司名稱}}「{{職缺}}」職缺的關注。\n我們尊重您的決定，也會妥善保留您的資料；未來若有更合適的機會，期待能再與您聯繫。\n祝 順心"}];
 /** 寄件匣用來對人的鍵：104 履歷連結（沒有就用試算表那一列的 id） */
@@ -623,11 +624,16 @@ function offerQueue(id, mode, confirmed){
   pullFromStore(); refreshDrawer();
   toast(mode === 'formal' ? '已排入：約 5 分鐘內由 hr@ 寄給新人' : '已排入：約 5 分鐘內由 hr@ 產生 Offer，測試寄到 hr@cheeseduke.com.tw');
 }
+/** Offer 寄出後用 104 聊聊通知新人：用自己的範本 tpl-offer-notice（不再借用「錄取通知」，免得又問一次要不要接受錄取） */
+const OFFER_NOTICE_TEXT = REPLY_TPLS.find(t => t.id === 'tpl-offer-notice').text;
 function offerChatText(h){
-  const f = h.offer.f, t = (S.tpl.find(x => x.id === 'tpl-offer') || {}).text || '';
-  const ctx = {'職缺': f.title, '姓名': h.name, '公司名稱': S.cfg.company, '報到日期': f.date ? slash(f.date) : '', '報到時間': f.time};
-  const okLink = h.ofc ? `\n\n收到後請點下面的連結，告訴我們是否會準時報到：\n${OK_URL}#t=${h.ofc.t}` : '';
-  return (t ? fillTpl(t, ctx) : `${h.name}您好，恭喜您錄取起士公爵「${f.title}」！`) + `\n\n錄取通知書已寄到您的 Email（${f.email}），請查收。` + okLink;
+  const f = h.offer.f, t = (S.tpl.find(x => x.id === 'tpl-offer-notice') || {}).text || OFFER_NOTICE_TEXT;
+  const link = h.ofc ? `${OK_URL}#t=${h.ofc.t}` : '';
+  const ctx = {'職缺': f.title, '姓名': (h.link104 && h.link104.name) || h.name, '公司名稱': S.cfg.company, '報到日期': f.date ? slash(f.date) : '', '報到時間': f.time, 'Email': f.email, '回覆連結': link};
+  let text = fillTpl(t, ctx);
+  if (!link) text = text.split('\n').filter(l => !/\{\{\s*回覆連結\s*\}\}|收到後請點下面的連結/.test(l)).join('\n');   // 舊的 Offer 沒有確認連結
+  else if (!text.includes(link)) text += `\n\n收到後請點下面的連結，告訴我們是否會準時報到：\n${link}`;
+  return text.replace(/\n{3,}/g, '\n\n');
 }
 function rowById(id){
   if (String(id).startsWith('ob:')) return obInviteRows('').find(r => r.id === id) || null;
@@ -2015,7 +2021,7 @@ function obAdminHTML(){
       <div class="job-ed-in">
         <div class="grid2"><div class="f"><label for="te-title-${id}">名稱</label><input id="te-title-${id}" data-te="title" data-id="${id}" value="${esc(v('title'))}" maxlength="40"></div>
         <div class="f"><label for="te-kind-${id}">用在</label><select class="inp" id="te-kind-${id}" data-te="kind" data-id="${id}">${TPL_KINDS.map(([k, l]) => `<option value="${k}"${v('kind') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
-        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}；錄取通知另有 {{報到日期}} {{報到時間}} {{回覆連結}}；面試前一天提醒另有 {{面試日期}} {{面試時間}} {{回覆連結}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
+        <div class="f"><label for="te-text-${id}">內容（可用 {{職缺}} {{姓名}} {{面試地點}} {{應徵連結}} {{公司名稱}}；錄取通知另有 {{報到日期}} {{報到時間}} {{回覆連結}}；面試前一天提醒另有 {{面試日期}} {{面試時間}} {{回覆連結}}；Offer 寄出後的聊聊通知另有 {{Email}} {{報到日期}} {{報到時間}} {{回覆連結}}）</label><textarea id="te-text-${id}" data-te="text" data-id="${id}" rows="10" maxlength="1000">${esc(v('text'))}</textarea></div>
         <div class="fl-row">${btns}</div>
       </div></details>`;
   }).join('');
