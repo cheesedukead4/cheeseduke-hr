@@ -272,7 +272,7 @@ function extFor(h){
 const rowHired = r => (R.hireByName.get(normName(r.name)) || []).some(h => !isDate(rowDay(r)) || near(hireDay(h), rowDay(r)));
 const screenTaken = r => rowHired(r) || R.invite.some(i => (r.cv && i.cv === r.cv) || (normName(i.name) === normName(r.name) && near(rowDay(i), rowDay(r))));
 /* 104「聯絡訊息」的事件進度（試算表「面試邀約」的「104事件進度」欄）優先；沒有這一欄或空白時看「邀約結果」 */
-const EV_CANCEL = /^(無意願|面試婉拒|面試取消)$/;
+const EV_CANCEL = /^(無意願|面試婉拒|面試取消|意願已取消)$/;
 const inviteDone = r => /^(感謝函|到職日期提醒)/.test(r.ev);   // 已經過了面試這一關，不放在前三欄
 const inviteCancel = r => EV_CANCEL.test(r.ev) || /取消/.test(r.st);
 const inviteBooked = r => !inviteCancel(r) && !inviteDone(r) && (r.ev === '面試同意' || /^已預約/.test(r.st));
@@ -291,7 +291,9 @@ function extItems(key, useQ = true){
   }
   if (key === 'x_invite') {
     const floor = addDays(t, -RC_DAYS.invite);
-    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q)).sort((a, b) => (a.at < b.at ? 1 : -1));
+    const yes = r => /^(有意願|面試同意)$/.test(r.ev) ? 0 : 1;
+    return R.invite.filter(r => inviteWaiting(r) && rowDay(r) >= floor && !rowHired(r) && vis(r)).concat(obInviteRows(q).filter(r => !inviteCancel(r)))
+      .sort((a, b) => yes(a) - yes(b) || (a.at < b.at ? 1 : -1));
   }
   if (key === 'x_booked') {
     return R.invite.filter(r => inviteBooked(r) && !rowHired(r) && vis(r) && (r.ivD ? r.ivD >= addDays(t, -RC_DAYS.booked) : (r.at || '').slice(0, 10) >= addDays(t, -14)))
@@ -299,7 +301,8 @@ function extItems(key, useQ = true){
   }
   if (key === 'x_cancel') {
     const floor = addDays(t, -RC_DAYS.cancel);
-    return R.invite.filter(r => inviteCancel(r) && rowDay(r) >= floor && vis(r)).sort((a, b) => (a.at < b.at ? 1 : -1));
+    return R.invite.filter(r => inviteCancel(r) && rowDay(r) >= floor && vis(r)).concat(obInviteRows(q).filter(r => inviteCancel(r) && rowDay(r) >= floor))
+      .sort((a, b) => (a.at < b.at ? 1 : -1));
   }
   return [];
 }
@@ -364,6 +367,8 @@ function obInviteRows(q){
     if (R.invite.some(i => o.to.cv && i.cv === o.to.cv)) return;
     const r = {id:'ob:' + o.id, src:'outbox', name:o.to.name, job:o.to.job, cv:o.to.cv, at: o.createdAt ? ymd(new Date(o.createdAt)) + 'T' + pad(new Date(o.createdAt).getHours()) + ':' + pad(new Date(o.createdAt).getMinutes()) : '',
       ob:o, st:'', ev:'', ivD:'', ivT:'', plat:'看板邀約', formSt:'', formFill:'', mail:'', sum:'', why:'', tier:'', score:null, type:''};
+    const ch = o.status === 'sent' ? chatFor(r) : null, chT = ch ? Date.parse(String(ch.time).replace(' ', 'T') + '+08:00') : 0;
+    if (ch && chT >= (o.sentAt || o.createdAt || 0) - 10 * 60000) r.ev = chatEv(ch);
     if (rowHired(r) || (q && ![r.name, r.job].some(x => x.toLowerCase().includes(q)))) return;
     out.push(r);
   });
@@ -375,8 +380,14 @@ function normChat(d){
   const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
   if (d.id == null || !d.jobNo || !d.pId) return null;
   return {id:String(d.id), name:s(d.name, 40), job:s(d.job, 120), jobNo:s(d.jobNo, 20), pId:s(d.pId, 20), last:s(d.last, 160),
-    from: d.from === 'us' ? 'us' : 'them', unread: !!d.unread, time:s(d.time, 19), ev: Number(d.ev) || 0};
+    from: d.from === 'us' ? 'us' : 'them', unread: !!d.unread, time:s(d.time, 19), ev: Number(d.ev) || 0,
+    evs: Number.isFinite(Number(d.evs)) && d.evs !== null && d.evs !== '' ? Number(d.evs) : -1};
 }
+/* 104 聊聊的事件進度（104 網頁的對照：eventType 1 面試邀約、2 詢問意願、4 感謝函、5 到職日期提醒；eventStatus 1 同意、2 婉拒、3 未回覆、4／5 過期或取消）
+   看板的「邀約」用 104「詢問意願」：應徵者按「我有興趣」＝有意願、按「婉拒」＝無意願 */
+const EV_NAMES = {1:{1:'面試同意', 2:'面試婉拒', 3:'面試未回覆', 4:'面試取消', 5:'面試取消'}, 2:{1:'有意願', 2:'無意願', 3:'意願未回覆', 4:'意願已過期', 5:'意願已取消'},
+  5:{1:'到職日期提醒同意', 2:'到職日期提醒婉拒', 3:'到職日期提醒未回覆', 4:'到職日期提醒取消', 5:'到職日期提醒取消'}};
+const chatEv = c => !c ? '' : c.ev === 4 ? '感謝函' : (EV_NAMES[c.ev] || {})[c.evs] || '';
 const jobKey = s => String(s || '').replace(/【[^】]*】/g, '').replace(/[\s()（）<>＜＞_\-－—–・·,，/、|]/g, '').toLowerCase();
 /** 這位應徵者在 104 聊聊的對話（姓名相同；同名的再看職缺） */
 function chatFor(r){
@@ -1138,7 +1149,7 @@ function colExtraHTML(key, mNum){
     return foldCardsHTML('pause', `不推薦・近 ${RC_DAYS.screen} 天 ${p.length} 位`, p.map(r => extCardHTML(r, 'x_screen')))
       + foldHTML('noinv', `已決定不邀約・${nd.length} 位`, nd.map(r => extLi(r, obFor(refOf(r)).type === 'skip' ? '只標記不邀約' : '感謝函' + ({queued:'排隊中', sending:'送出中', sent:'已送出'}[obFor(refOf(r)).status] || ''))));
   }
-  if (key === 'x_booked' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `應徵者取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r))); }
+  if (key === 'x_invite' && R.meta) { const c = extItems('x_cancel'); return foldHTML('cancel', `婉拒或取消・近 ${RC_DAYS.cancel} 天 ${c.length} 位`, c.map(r => extLi(r, [r.ev || r.st, r.job].filter(Boolean).join('・')))); }
   return '';
 }
 function renderBoard(){
