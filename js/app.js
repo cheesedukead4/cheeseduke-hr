@@ -1,7 +1,8 @@
 /*
  * 人事工作看板｜全部畫面
  * ---------------------------------------------------------------
- * 頁面（網址 #overview #recruit #pipeline #routine #manual #sched #users）：總覽、招募、新進人員・勞健保、例行工作、工作手冊、班表、管理（只有管理員）。
+ * 頁面（網址 #overview #cal #recruit #pipeline #routine #manual #sched #users）：總覽、行事曆、招募、新進人員・勞健保、例行工作、工作手冊、班表、管理（只有管理員）。
+ *   「行事曆」把面試、報到、工作手冊的到期／週期事項、每週例行會議、班表設定的國定假日排在月曆上（只是彙整，不另外存資料）。
  *   「班表」頁在 sched-board.js（window.HRSched），格子與工時檢查在 sched-core.js（部門填寫頁 sched.html 共用）。
  * 流程（白板）：Gmail 撈履歷 → AI 篩選 → 邀約（選時 → 人事表）→ 面試（錄／不錄）→ 確認入職（要／不要）→ Offer → 報到 → 證件 → APOLLO → 勞健保。
  *   「招募」頁前三欄（履歷篩選、邀約中、已約面試）是 hr@ 的「履歷篩選」試算表的進度：雲端後端每 10 分鐘讀一次存成 recruit，這裡只能看；
@@ -106,8 +107,8 @@ const PERMS = [
   {id:'sched',   label:'班表管理',     desc:'匯入員工名單、產生部門填寫連結、修改、鎖定與匯出班表（沒有這個權限只能看班表）'}
 ];
 const PERM_LABEL = Object.fromEntries(PERMS.map(p => [p.id, p.label]));
-const VIEWS = ['overview','recruit','pipeline','routine','manual','sched','users'];
-const BOX = {overview:'overview', recruit:'pipeline', pipeline:'pipeline', routine:'routine', manual:'manual', sched:'sched', users:'users'}; // 招募與新進人員共用同一個看板畫面
+const VIEWS = ['overview','cal','recruit','pipeline','routine','manual','sched','users'];
+const BOX = {overview:'overview', cal:'cal', recruit:'pipeline', pipeline:'pipeline', routine:'routine', manual:'manual', sched:'sched', users:'users'}; // 招募與新進人員共用同一個看板畫面
 
 /* 起士公爵人事資料表：回覆試算表的標題（去掉空白）→ 欄位，同名欄位依出現順序對應 */
 const COLS = {
@@ -162,6 +163,7 @@ const S = {
   rtEdit:{}, rtConfirm:null, imp:null,
   batch:false, sel:new Set(), batchConfirm:false, batchDate:'', jobs:[],
   mnQ:'', mnOpen:new Set(), mnFocus:'', rtMn:new Set(),
+  calMonth:'', calSel:'', calOff:new Set(),   // 行事曆：顯示的月份、選的日期、關掉的類別
   outbox:[], tpl:[], cfg:{company:'起士公爵', place:'', contactName:'', contactPhone:'', replyDays:3},
   chat:{unread:0, total:0, items:[]}, chatAll:false
 };
@@ -872,9 +874,10 @@ const MN_GROUPS = [['daily','每日'],['weekly','每週'],['monthly','每月'],[
 function cleanManual(d){
   const s = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
   const parts = (Array.isArray(d.parts) ? d.parts : []).slice(0, 20).map(p => { p = obj(p); return {desc:s(p.desc, 2000), steps:s(p.steps, 2000), ref:s(p.ref, 2000), file:s(p.file, 600), teachFile:s(p.teachFile, 200), teachVideo:s(p.teachVideo, 400)}; });
-  const dues = (Array.isArray(d.dues) ? d.dues : []).slice(0, 8).map(obj)
-    .filter(x => (x.type === 'date' && isDate(x.date)) || (x.type === 'md' && /^\d{2}-\d{2}$/.test(x.md || '')) || ((x.type === 'mstart' || x.type === 'mend') && Number.isInteger(x.month) && x.month >= 1 && x.month <= 12))
-    .map(x => ({type:x.type, date:x.date || '', md:x.md || '', month:x.month || 0, label:s(x.label, 60), lead:Math.min(Math.max(Number(x.lead) || 30, 1), 400)}));
+  const dues = (Array.isArray(d.dues) ? d.dues : []).slice(0, 10).map(obj)
+    .filter(x => (x.type === 'date' && isDate(x.date)) || (x.type === 'md' && /^\d{2}-\d{2}$/.test(x.md || '')) || ((x.type === 'mstart' || x.type === 'mend') && Number.isInteger(x.month) && x.month >= 1 && x.month <= 12)
+      || (x.type === 'mday' && Number.isInteger(x.day) && x.day >= 1 && x.day <= 31))
+    .map(x => ({type:x.type, date:x.date || '', md:x.md || '', month:x.month || 0, day:x.day || 0, label:s(x.label, 60), lead:Math.min(Math.max(Number(x.lead) || 30, 1), 400)}));
   return {id:String(d.id), sec: d.sec === 'project' ? 'project' : 'routine', kind: MN_KINDS.includes(d.kind) ? d.kind : 'adhoc', freqRaw:s(d.freqRaw, 40), title:s(d.title, 80),
     weekday: Number.isInteger(d.weekday) ? d.weekday : -1, day: Number.isInteger(d.day) ? d.day : 0,
     months: Array.isArray(d.months) ? d.months.filter(m => Number.isInteger(m) && m >= 1 && m <= 12) : [],
@@ -900,10 +903,16 @@ function mnRoutineItems(freq){
   return M.items.filter(i => i.sec === 'routine' && (freq === 'daily' ? i.kind === 'daily' : freq === 'weekly' ? i.kind === 'weekly' : (i.kind === 'monthly' || (i.kind === 'yearly' && i.months.includes(month)))))
     .map((i, n) => ({id:i.id, freq, title:i.title, due:mnDue(i), order:n, sheet:true}));
 }
-/** 到期提醒：下一次的日期（每年的日期過了 14 天就算明年的） */
+/** 到期提醒：下一次的日期（每年的日期過了 14 天就算明年的；每月幾號過了 3 天就算下個月的） */
+const dueGrace = d => d.type === 'date' ? 30 : d.type === 'mday' ? 3 : 14;
+const mdayOf = (d, y, m) => { const last = new Date(y, m, 0).getDate(); return `${y}-${pad(m)}-${pad(Math.min(d.day, last))}`; };   // m：1–12
 function dueNext(d, t){
   if (d.type === 'date') return d.date;
   const y = +t.slice(0, 4);
+  if (d.type === 'mday') {
+    const m = +t.slice(5, 7), x = mdayOf(d, y, m);
+    return dayDiff(t, x) < -3 ? (m === 12 ? mdayOf(d, y + 1, 1) : mdayOf(d, y, m + 1)) : x;
+  }
   const mk = yy => d.type === 'md' ? `${yy}-${d.md}` : d.type === 'mstart' ? `${yy}-${pad(d.month)}-01` : ymd(new Date(yy, d.month, 0));
   let x = mk(y);
   if (dayDiff(t, x) < -14) x = mk(y + 1);
@@ -913,7 +922,7 @@ function mnReminders(){
   const t = today(), out = [];
   for (const i of M.items) for (const d of i.dues) {
     const date = dueNext(d, t), n = dayDiff(t, date);
-    if (isFinite(n) && n <= d.lead && n >= (d.type === 'date' ? -30 : -14)) out.push({i, d, date, n});
+    if (isFinite(n) && n <= d.lead && n >= -dueGrace(d)) out.push({i, d, date, n});
   }
   return out.sort((a, b) => a.n - b.n);
 }
@@ -1243,6 +1252,7 @@ function renderViews(){
   const remN = M.meta ? mnReminders().length : 0;
   const tabs = [
     ['overview', '總覽', urgent ? `${urgent} 項緊急` : ''],
+    ['cal', '行事曆', ''],
     ['recruit', '招募', S.loaded ? `${inRecruit} 人` : ''],
     ['pipeline', '新進人員・勞健保', S.loaded ? `${inFlow} 人` : ''],
     ['routine', '例行工作', S.loaded && left ? `未完成 ${left}` : ''],
@@ -1276,7 +1286,7 @@ function renderFoot(){
   $('#foot').innerHTML = `${me}<span>${n} 筆人事資料 · ${S.routines.size} 項例行工作</span>`;
 }
 function showView(){
-  for (const k of ['overview','pipeline','routine','manual','sched','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
+  for (const k of ['overview','cal','pipeline','routine','manual','sched','users']) $('#' + k + '-view').hidden = BOX[S.view] !== k;
 }
 
 /* ================= 招募／新進人員・勞健保（同一個看板畫面，欄位不同） ================= */
@@ -1976,7 +1986,7 @@ function renderRoutine(){
 function mnCardHTML(i){
   const t = today();
   const chips = [i.freqRaw && chip(i.freqRaw), i.owner && chip(i.owner), i.duration && chip(i.duration)]
-    .concat(i.dues.map(d => { const x = dueNext(d, t), n = dayDiff(t, x), lb = d.label || '到期'; return chip(d.type === 'date' && /\d/.test(lb) ? lb : `${lb}・${md(x)}`, isFinite(n) && n <= d.lead && n >= -14 ? 'warn' : ''); }))
+    .concat(i.dues.map(d => { const x = dueNext(d, t), n = dayDiff(t, x), lb = d.label || '到期'; return chip(d.type === 'date' && /\d/.test(lb) ? lb : `${lb}・${md(x)}`, isFinite(n) && n <= d.lead && n >= -dueGrace(d) ? 'warn' : ''); }))
     .filter(Boolean).join('');
   return `<details class="mn-item" id="mn-${esc(i.id)}" data-mn="${esc(i.id)}"${S.mnOpen.has(i.id) ? ' open' : ''}><summary><span class="mn-t">${esc(i.title)}</span><span class="chips">${chips}</span></summary><div class="mn-body">${mnDetailHTML(i)}</div></details>`;
 }
@@ -1999,6 +2009,80 @@ function renderManual(){
     S.mnFocus = '';
     if (el) { el.open = true; el.scrollIntoView({block:'start'}); el.querySelector('summary').focus(); }
   }
+}
+/* ================= 行事曆（面試、報到、工作手冊到期／週期事項、每週例行、國定假日；只彙整，不另外存資料） ================= */
+const CAL_KINDS = [['iv','面試'],['start','報到'],['due','工作手冊'],['wk','每週例行'],['hol','國定假日']];
+const CAL_LABEL = Object.fromEntries(CAL_KINDS), CAL_ORD = {hol:0, iv:1, start:2, due:3, wk:4};
+const realDate = x => isDate(x) && new Date(x + 'T00:00:00').getDate() === +x.slice(8, 10);
+/** 工作手冊的一個提醒在 ym 這個月落在哪一天（沒有就回傳 ''） */
+function dueInMonth(d, ym){
+  const y = +ym.slice(0, 4), m = +ym.slice(5, 7);
+  if (d.type === 'date') return d.date.startsWith(ym) ? d.date : '';
+  if (d.type === 'md') { const x = `${y}-${d.md}`; return realDate(x) && x.startsWith(ym) ? x : ''; }
+  if (d.type === 'mday') return mdayOf(d, y, m);
+  if (d.month !== m) return '';
+  return d.type === 'mstart' ? `${ym}-01` : ymd(new Date(y, m, 0));
+}
+function calEvents(ym){
+  const ev = [], inM = d => realDate(d) && d.startsWith(ym);
+  for (const h of S.hires.values()) {
+    let ivD = h.interviewDate, ivT = h.interviewTime || '';
+    if (!ivD && h.stage === 'interview') { const inv = extFor(h).invite; if (inv) { ivD = inv.ivD || ''; ivT = inv.ivT || ''; } }
+    if (inM(ivD)) ev.push({k:'iv', date:ivD, time:ivT, title:`面試 ${nm(h)}`, sub:[h.position, '目前：' + (TITLE[h.stage] || '')].filter(Boolean).join('・'), open:h.id});
+    const st = ['interview','rejected','declined'].includes(h.stage) ? '' : apStart(h);
+    if (inM(st)) ev.push({k:'start', date:st, time:'', title:`報到 ${nm(h)}`, sub:[h.position, h.dept, '當天加勞保、就保'].filter(Boolean).join('・'), open:h.id});
+  }
+  if (R.meta) for (const r of extItems('x_booked', false)) if (inM(r.ivD)) ev.push({k:'iv', date:r.ivD, time:r.ivT || '', title:`面試 ${r.name}`, sub:[r.job, r.formFill === '已填寫' ? '人事表已填' : '人事表未填'].filter(Boolean).join('・'), go:'x_booked'});
+  if (M.meta) {
+    const y = +ym.slice(0, 4), m = +ym.slice(5, 7), last = new Date(y, m, 0).getDate();
+    for (const i of M.items) {
+      for (const d of i.dues) { const x = dueInMonth(d, ym); if (x) ev.push({k:'due', date:x, time:'', title:d.label || i.title, sub:`${i.title}・提前 ${d.lead} 天提醒`, mn:i.id}); }
+      if (i.sec === 'routine' && i.kind === 'weekly' && i.weekday >= 0)
+        for (let dd = 1; dd <= last; dd++) if (new Date(y, m - 1, dd).getDay() === i.weekday) ev.push({k:'wk', date:`${ym}-${pad(dd)}`, time:'', title:i.title, sub:`每週${WD7[i.weekday]}${i.owner ? '・' + i.owner : ''}`, mn:i.id});
+    }
+  }
+  const hol = obj(ST.get('sched', ym + '|_m')).hol;
+  if (Array.isArray(hol)) for (const d of hol) { const x = `${ym}-${pad(parseInt(d, 10))}`; if (realDate(x)) ev.push({k:'hol', date:x, time:'', title:'國定假日', sub:'班表「每月設定」填的國定假日'}); }
+  const key = e => `${e.date}${CAL_ORD[e.k]}${e.time || '99:99'}`;
+  return ev.filter(e => !S.calOff.has(e.k)).sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+function calRowHTML(e){
+  const attr = e.open && S.hires.has(e.open) ? `data-open="${esc(e.open)}"` : e.mn ? `data-mn-go="${esc(e.mn)}"` : e.go ? `data-go="recruit" data-tab="${e.go}"` : '';
+  const inner = `<span class="cal-mark k-${e.k}" aria-hidden="true"></span><span class="ov-who"><span class="ov-name">${esc(e.title)}</span>${e.sub ? `<span class="ov-sub">${esc(e.sub)}</span>` : ''}</span>${chip(e.time || CAL_LABEL[e.k])}`;
+  return `<li>${attr ? `<button class="ov-row" type="button" ${attr}>${inner}</button>` : `<div class="ov-row cal-static">${inner}</div>`}</li>`;
+}
+function renderCal(){
+  const root = $('#cal-view'), t = today();
+  const a = document.activeElement, focusSel = a && root.contains(a) ? ['data-cal-day','data-cal','data-cal-k'].map(n => a.hasAttribute(n) ? `[${n}="${a.getAttribute(n)}"]` : '').find(Boolean) : '';
+  if (!/^\d{4}-\d{2}$/.test(S.calMonth)) S.calMonth = curMonth();
+  const ym = S.calMonth, y = +ym.slice(0, 4), m = +ym.slice(5, 7);
+  if (!S.calSel.startsWith(ym)) S.calSel = t.startsWith(ym) ? t : `${ym}-01`;
+  const ev = S.loaded ? calEvents(ym) : [], by = new Map();
+  for (const e of ev) { if (!by.has(e.date)) by.set(e.date, []); by.get(e.date).push(e); }
+  const first = new Date(y, m - 1, 1).getDay(), last = new Date(y, m, 0).getDate(), cells = [];
+  for (let k = 0; k < first; k++) cells.push('<div class="cal-cell blank" aria-hidden="true"></div>');
+  for (let dd = 1; dd <= last; dd++) {
+    const date = `${ym}-${pad(dd)}`, list = by.get(date) || [], wd = (first + dd - 1) % 7, isHol = list.some(e => e.k === 'hol');
+    const shown = list.filter(e => e.k !== 'hol');
+    const evs = shown.slice(0, 3).map(e => `<span class="cal-ev k-${e.k}" title="${esc(e.title)}">${e.time ? `<b>${esc(e.time)}</b> ` : ''}${esc(e.title)}</span>`).join('') + (shown.length > 3 ? `<span class="cal-more">還有 ${shown.length - 3} 件</span>` : '');
+    const dots = shown.slice(0, 4).map(e => `<i class="k-${e.k}"></i>`).join('');
+    cells.push(`<button type="button" class="cal-cell${date === t ? ' today' : ''}${date === S.calSel ? ' sel' : ''}${isHol || wd === 0 || wd === 6 ? ' off' : ''}${isHol ? ' hol' : ''}" data-cal-day="${date}" aria-pressed="${date === S.calSel}" aria-label="${m} 月 ${dd} 日（${WD7[wd]}）${date === t ? '，今天' : ''}${list.length ? `，${list.length} 件事` : ''}"><span class="cal-n">${dd}</span>${isHol ? '<span class="cal-hol">國定假日</span>' : ''}<span class="cal-evs">${evs}</span><span class="cal-dots" aria-hidden="true">${dots}</span></button>`);
+  }
+  while (cells.length % 7) cells.push('<div class="cal-cell blank" aria-hidden="true"></div>');
+  const sel = by.get(S.calSel) || [], sd = new Date(S.calSel + 'T00:00:00');
+  const agenda = !S.loaded ? '<p class="rt-empty">讀取中…</p>' : sel.length ? `<ul class="ov-list">${sel.map(calRowHTML).join('')}</ul>` : '<p class="rt-empty">這天沒有排定的事項。</p>';
+  root.innerHTML = `<div class="cal-top">
+      <div class="month" role="group" aria-label="行事曆月份"><button class="btn icon" type="button" data-cal="prev" aria-label="上個月">‹</button><span class="m-label">${y} 年 ${m} 月</span><button class="btn icon" type="button" data-cal="next" aria-label="下個月">›</button></div>
+      <button class="btn" type="button" data-cal="today"${ym === curMonth() && S.calSel === t ? ' disabled' : ''}>今天</button>
+      <span class="sp"></span>
+      <div class="cal-legend" role="group" aria-label="顯示哪些事項">${CAL_KINDS.map(([k, l]) => `<button type="button" class="cal-lg" data-cal-k="${k}" aria-pressed="${!S.calOff.has(k)}"><i class="k-${k}" aria-hidden="true"></i>${l}</button>`).join('')}</div>
+    </div>
+    <div class="cal-wrap">
+      <div class="cal-grid"><div class="cal-wd" aria-hidden="true">${[...WD7].map((w, i) => `<span${i === 0 || i === 6 ? ' class="off"' : ''}>${w}</span>`).join('')}</div><div class="cal-days">${cells.join('')}</div></div>
+      <section class="ov-card cal-agenda" id="cal-agenda" aria-labelledby="cal-ag-h" aria-live="polite"><header class="ov-h"><h2 id="cal-ag-h">${sd.getMonth() + 1}/${sd.getDate()}（${WD7[sd.getDay()]}）${S.calSel === t ? '・今天' : ''}</h2><span class="muted">${sel.length ? `${sel.length} 件` : ''}</span></header>${agenda}</section>
+    </div>
+    <p class="foot-note">面試、報到來自看板上的人和「已約面試」；工作手冊的事項來自「HR工作清冊」寫的到期日和週期（點了會打開那一項，提醒會提前出現在總覽和工作手冊）；國定假日來自班表的「每月設定」。${M.meta ? '' : '工作清冊還沒連結，所以看不到工作手冊的事項。'}</p>`;
+  if (focusSel) { const f = root.querySelector(focusSel); if (f) f.focus(); }
 }
 function toggleCheck(freq, itemId, on){
   if (!FREQ_KEYS.includes(freq)) return;
@@ -2921,6 +3005,7 @@ function render(){
   else if (S.view === 'pipeline' || S.view === 'recruit') { renderToolbar(); renderStats(); renderTabs(); renderChat(); renderBoard(); renderBatchBar(); }
   else if (S.view === 'routine') renderRoutine();
   else if (S.view === 'manual') renderManual();
+  else if (S.view === 'cal') renderCal();
   else if (S.view === 'sched' && window.HRSched) HRSched.render();
   else if (S.view === 'users') { if (!(document.activeElement && document.activeElement.closest && document.activeElement.closest('.job-ed, .tpl-ed, .ob-cfg, #at-text'))) renderUsers(); } // 正在編輯職缺條件時不重畫
   if (S.openId && !S.creating) refreshDrawer();
@@ -2934,7 +3019,7 @@ function setView(v){
   if (location.hash.slice(1) !== S.view) { try { history.replaceState(null, '', '#' + S.view); } catch {} }
   render();
   window.scrollTo(0, 0);
-  if (['recruit','pipeline','overview','routine','manual'].includes(S.view)) formSync();
+  if (['recruit','pipeline','overview','routine','manual','cal'].includes(S.view)) formSync();
 }
 
 /* ================= 事件 ================= */
@@ -2995,6 +3080,24 @@ $('#overview-view').addEventListener('click', e => {
   const mg = e.target.closest('[data-mn-go]');
   if (mg) { S.mnFocus = mg.dataset.mnGo; S.mnOpen.add(S.mnFocus); setView('manual'); return; }
   if (e.target.closest('[data-slots]')) { openSlots(); return; }
+  const g = e.target.closest('[data-go]');
+  if (g) { const tb = g.dataset.tab; if (tb && BOARD_OF[tb]) S.tabs[BOARD_OF[tb]] = tb; setView(g.dataset.go); return; }
+  const o = e.target.closest('[data-open]');
+  if (o && S.hires.has(o.dataset.open)) openDrawer(o.dataset.open, S.hires.get(o.dataset.open).stage === 'interview' ? 'comment' : null);
+});
+$('#cal-view').addEventListener('click', e => {
+  const c = e.target.closest('[data-cal]');
+  if (c) {
+    if (c.dataset.cal === 'today') { S.calMonth = curMonth(); S.calSel = today(); }
+    else { const [y, m] = S.calMonth.split('-').map(Number), d = new Date(y, m - 1 + (c.dataset.cal === 'prev' ? -1 : 1), 1); S.calMonth = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; S.calSel = ''; }
+    renderCal(); return;
+  }
+  const k = e.target.closest('[data-cal-k]');
+  if (k) { const x = k.dataset.calK; if (S.calOff.has(x)) S.calOff.delete(x); else S.calOff.add(x); renderCal(); return; }
+  const dc = e.target.closest('[data-cal-day]');
+  if (dc) { S.calSel = dc.dataset.calDay; renderCal(); if (matchMedia('(max-width:760px)').matches) $('#cal-agenda').scrollIntoView({block:'nearest'}); return; }
+  const mg = e.target.closest('[data-mn-go]');
+  if (mg) { S.mnFocus = mg.dataset.mnGo; S.mnOpen.add(S.mnFocus); setView('manual'); return; }
   const g = e.target.closest('[data-go]');
   if (g) { const tb = g.dataset.tab; if (tb && BOARD_OF[tb]) S.tabs[BOARD_OF[tb]] = tb; setView(g.dataset.go); return; }
   const o = e.target.closest('[data-open]');
