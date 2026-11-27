@@ -506,18 +506,18 @@ function onbText(h){
 }
 function onbHTML(h){
   if (['interview', 'rejected', 'declined', 'done'].includes(h.stage)) return '';
-  const c = docCount(h), live = onbLive(h), ch = chatFor({name:h.name, job:h.position});
+  const c = docCount(h), live = onbLive(h), x = hire104(h), ch = x.ch || is104(x.cv);
   const day = ts => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()}`; };
   const status = !h.onb ? '還沒傳報到連結。錄取、確定要來之後，按下面的按鈕把報到資訊和上傳連結傳給新人。'
     : !live ? `報到連結已經過期（${day(h.onb.exp)}），要再傳請按「換新連結」。`
     : `報到連結 ${fmtTime(h.onb.at)} 產生、${day(h.onb.exp)} 前有效${h.onb.last ? `・新人最後上傳 ${fmtTime(h.onb.last)}` : '・新人還沒上傳'}`;
   const btns = !canEdit() ? [] : [
-    ch ? `<button class="btn sm primary" type="button" data-act="onb-send">${h.onb && live ? '再傳一次（104 聊聊）' : '傳報到連結（104 聊聊）'}</button>` : '',
+    ch ? `<button class="btn sm primary" type="button" data-act="onb-send">${h.onb && live ? '再傳一次（104）' : '傳報到連結（104）'}</button>` : '',
     `<button class="btn sm" type="button" data-act="onb-copy">複製報到訊息</button>`,
     h.onb ? `<button class="btn sm ghost" type="button" data-act="onb-new">換新連結</button>` : ''].filter(Boolean);
   return `<section class="sec"><h3>報到連結 <span class="h-count">必要文件 ${c.have}/${c.need}</span></h3>
     <p class="muted">${esc(status)}</p>
-    ${canEdit() && !ch ? '<p class="note">找不到這位在 104 聊聊的對話：請按「複製報到訊息」，用 LINE 或簡訊傳給新人。</p>' : ''}
+    ${canEdit() && !ch ? '<p class="note">找不到這位的 104 履歷或聊聊對話：請按「複製報到訊息」，用 LINE 或簡訊傳給新人。</p>' : ''}
     ${btns.length ? `<div class="fl-row">${btns.join('')}</div>` : ''}</section>`;
 }
 /* ---------- Offer 錄取通知書：看板填好排隊，hr@ 的履歷篩選程式約 5 分鐘內用部門範本產生 PDF、用 hr@ 寄出，PDF 傳回看板 ---------- */
@@ -579,10 +579,10 @@ function offerHTML(h){
     : [
     OFFER_FORMAL ? `<button class="btn sm primary" type="button" data-act="offer-formal">${o && o.st === 'done' && o.sentMode === 'formal' ? '重新寄給新人' : '正式寄給新人'}</button>` : '',
     `<button class="btn sm${OFFER_FORMAL ? '' : ' primary'}" type="button" data-act="offer-test">${o && o.st === 'done' ? '重新產生（測試寄到 hr@）' : '產生 Offer（測試寄到 hr@）'}</button>`].filter(Boolean);
-  const ch = OFFER_FORMAL && o && o.st === 'done' && o.sentMode === 'formal' && canEdit() ? chatFor({name:h.name, job:h.position}) : null;
-  if (ch) btns.push('<button class="btn sm" type="button" data-act="offer-chat">用 104 聊聊通知新人</button>');
+  const x = OFFER_FORMAL && o && o.st === 'done' && o.sentMode === 'formal' && canEdit() ? hire104(h) : null;
+  if (x && (x.ch || is104(x.cv))) btns.push('<button class="btn sm" type="button" data-act="offer-chat">用 104 通知新人</button>');
   return `<section class="sec"><h3>Offer 錄取通知書 <span class="h-count">${OFFER_FORMAL ? '' : '測試模式'}</span></h3>
-    <p class="muted">填好後按「產生 Offer」：hr@ 的履歷篩選程式約 5 分鐘內用部門的 Google 文件範本產生 PDF、用 hr@ 寄出，PDF 會傳回這裡。${OFFER_FORMAL ? '「正式寄給新人」寄到上面填的 Email（寄出前會再確認一次），寄出後可以按「用 104 聊聊通知新人」；想先看 PDF 可以按「測試寄到 hr@」。' : '目前是測試模式：信寄到 hr@cheeseduke.com.tw（標題有［測試］），不會寄給新人，也不會傳 104 聊聊。'}</p>
+    <p class="muted">填好後按「產生 Offer」：hr@ 的履歷篩選程式約 5 分鐘內用部門的 Google 文件範本產生 PDF、用 hr@ 寄出，PDF 會傳回這裡。${OFFER_FORMAL ? '「正式寄給新人」寄到上面填的 Email（寄出前會再確認一次），寄出後可以按「用 104 通知新人」；想先看 PDF 可以按「測試寄到 hr@」。' : '目前是測試模式：信寄到 hr@cheeseduke.com.tw（標題有［測試］），不會寄給新人，也不會傳 104 聊聊。'}</p>
     <div class="grid2">
       <div class="f"><label for="of-sal">稱謂</label><select class="inp" id="of-sal" data-of="sal"${dis}><option value="">請選擇</option>${['小姐', '先生'].map(x => `<option${v.sal === x ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
       ${inp('email', 'Email', 'type="email" maxlength="120"')}
@@ -826,6 +826,28 @@ function decide(id, hired){
   saveHire(id, r => { r.stage = hired ? 'confirm' : 'rejected'; r.result = hired ? 'hired' : 'rejected'; r.steps = obj(r.steps); r.steps.interview = {at:Date.now(), by:myName()}; });
   toast(hired ? `${nm(h)} 已錄取，移到「確認入職」` : `${nm(h)} 已標記為未錄取`, () => backTo(id, 'interview'));
   if (hired) { pullFromStore(); hireLetter(id); }   // 錄取後馬上打開錄取通知（帶好「錄取通知」範本），確認後由 104 小幫手送出
+  else { pullFromStore(); rejectLetter(id); }       // 未錄取：打開「面試後婉拒通知」（104 感謝函），不想送可以取消或改「只標記」
+}
+/** 新人在 104 的姓名、職缺、履歷連結和聊聊對話（新人自己填的姓名可能跟 104 不同，用 104 上的找） */
+function hire104(h){
+  const name = (h.link104 && h.link104.name) || h.name, job = (h.link104 && h.link104.job) || h.position || '', cv = (h.link104 && h.link104.cv) || '';
+  return {name, job, cv, ch: chatFor({name, job})};
+}
+/** 用 104 傳文字給新人：有聊聊對話就回那則對話；沒有就用 104 履歷開聊聊（小幫手 1.4.0 起）；都沒有回傳 false */
+function hireSend(h, text){
+  const x = hire104(h), row = {id:'hire:' + h.id, name:x.name, job:x.job, cv:x.cv, preset:text};
+  if (x.ch) { openOb('chat', Object.assign(row, {chat:x.ch})); return true; }
+  if (is104(x.cv)) { openOb('message', row); return true; }
+  return false;
+}
+/** 未錄取的通知：104 感謝函帶「面試後婉拒通知」範本；沒有 104 履歷連結但有聊聊對話就用聊聊；都沒有就複製文字 */
+function rejectLetter(id){
+  const h = S.hires.get(id); if (!h || !canEdit()) return;
+  const x = hire104(h), tpl = S.tpl.find(t => t.id === 'tpl-thanks-interview') || tplOf('thanks')[0];
+  if (is104(x.cv)) { openOb('reject', {id:'hire:' + id, name:x.name, job:x.job, cv:x.cv, tplId: tpl ? tpl.id : ''}); return; }
+  const text = tpl ? fillTpl(tpl.text, obCtx({name:x.name, job:x.job}, x.job)) : '';
+  if (x.ch && text) { openOb('chat', {id:'hire:' + id, name:x.name, job:x.job, cv:'', chat:x.ch, preset:text}); return; }
+  if (text) { copyText(text); toast(`找不到 ${x.name} 的 104 履歷或聊聊：「${tpl.title}」已複製，可以用 LINE 或簡訊傳`, null, 8000); }
 }
 /* ---------- 錄取通知：用 104 聊聊（找不到聊聊就用 104 訊息；都沒有就複製）傳「錄取通知」範本 ---------- */
 function hireLetterRef(h){ return (h.link104 && h.link104.cv) || ('row:hire:' + h.id); }
@@ -1863,7 +1885,7 @@ function openOb(type, row){
   if (!canEdit() || !row) return;
   OBM.row = row; OBM.type = type; OBM.mode = 'send'; OBM.err = ''; OBM.guide = null; OBM.preset = row.preset || '';
   const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
-  OBM.tplId = type === 'message' || type === 'chat' ? '' : list[0] ? list[0].id : '';
+  OBM.tplId = row.tplId && list.some(t => t.id === row.tplId) ? row.tplId : type === 'message' || type === 'chat' ? '' : list[0] ? list[0].id : '';
   renderOb(true);
   $('#obm').hidden = false;
   document.documentElement.classList.add('lock');
@@ -1882,14 +1904,15 @@ function renderOb(fresh){
   const list = type === 'message' || type === 'chat' ? S.tpl : tplOf(type === 'reject' ? 'thanks' : 'invite');
   const opts = (type === 'message' || type === 'chat' ? '<option value="">（空白）</option>' : '') + list.map(t => `<option value="${esc(t.id)}"${t.id === OBM.tplId ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
   const text = v('ob-text', fresh ? (OBM.preset || fillTpl((S.tpl.find(x => x.id === OBM.tplId) || {}).text || '', obCtx(r, r.job))) : '');
-  const title = {invite:'邀約面試', reject:'不邀約', message:'傳送訊息', chat:'104 聊聊'}[type];
+  const isHire = String(r.id || '').startsWith('hire:');   // 面試後的人（錄取／未錄取通知、報到、Offer）
+  const title = type === 'reject' && isHire ? '未錄取通知' : {invite:'邀約面試', reject:'不邀約', message:'傳送訊息', chat:'104 聊聊'}[type];
   $('#ob-title').textContent = `${title}・${r.name}`;
   const warn = !RN.configured ? '還沒有設定 104 小幫手（管理頁），排入後要等小幫手設定好才會送出；也可以按「複製並打開 104」自己送。'
     : !rnOnline() ? '104 小幫手目前沒有在執行（裝了小幫手的瀏覽器沒開），排入後要等它開了才會送出；急的話按「複製並打開 104」自己送。'
     : RN.login === 'logged_out' ? '104 小幫手那邊還沒登入 104，請在裝了小幫手的瀏覽器登入；或按「複製並打開 104」自己送。' : '';
   $('#ob-body').innerHTML = `
     <p class="ob-to"><b>${esc(r.name)}</b>${r.job ? `・${esc(r.job)}` : ''}${r.cv ? ` <a class="link" href="${esc(r.cv)}" target="_blank" rel="noopener">104 履歷 ↗</a>` : ''}</p>
-    ${type === 'reject' ? `<div class="ob-mode" role="radiogroup" aria-label="不邀約的方式">
+    ${type === 'reject' && !isHire ? `<div class="ob-mode" role="radiogroup" aria-label="不邀約的方式">
       <label><input type="radio" name="ob-mode" value="send"${send ? ' checked' : ''}> 送感謝函</label>
       <label><input type="radio" name="ob-mode" value="skip"${send ? '' : ' checked'}> 只標記不邀約，不送訊息</label></div>` : ''}
     ${type === 'chat' && r.chat ? `<p class="chat-ctx"><span class="chat-from">${r.chat.from === 'us' ? '我們' : '對方'}最後說（${esc(chatWhen(r.chat.time))}）：</span>${esc(r.chat.last || '（檔案或系統訊息）')}</p>` : ''}
@@ -2864,7 +2887,7 @@ $('#drawer').addEventListener('click', e => {
     case 'photo-del-yes': deletePhoto(id, key); break;
     case 'rec-del': S.confirm = {type:'record'}; refreshDrawer(); break;
     case 'rec-del-yes': deleteRecord(id); break;
-    case 'onb-send': { const h1 = onbEnsure(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:onbText(h1)}); else if (h1) toast('找不到 104 聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
+    case 'onb-send': { const h1 = onbEnsure(id); if (h1 && !hireSend(h1, onbText(h1))) toast('找不到 104 履歷或聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
     case 'onb-copy': { const h1 = onbEnsure(id); if (h1) { copyText(onbText(h1)); toast('已複製報到訊息，貼到 LINE 或簡訊傳給新人'); } refreshDrawer(); break; }
     case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
     case 'offer-test': offerQueue(id, 'test'); break;
@@ -2873,7 +2896,7 @@ $('#drawer').addEventListener('click', e => {
     case 'offer-formal-no': OF.confirmId = ''; refreshDrawer(); break;
     case 'offer-cancel': saveHire(id, r => { if (r.offer && r.offer.st === 'queued') r.offer.st = 'canceled'; }); pullFromStore(); refreshDrawer(); break;
     case 'offer-pdf': photoOf(b.dataset.fid); refreshDrawer(); break;
-    case 'offer-chat': { const h1 = S.hires.get(id); const ch = h1 && chatFor({name:h1.name, job:h1.position}); if (h1 && ch && h1.offer) openOb('chat', {id:'hire:' + id, name:h1.name, job:h1.position, cv:'', chat:ch, preset:offerChatText(h1)}); break; }
+    case 'offer-chat': { const h1 = S.hires.get(id); if (h1 && h1.offer && !hireSend(h1, offerChatText(h1))) toast('找不到 104 履歷或聊聊對話'); break; }
     case 'cancel': S.confirm = null; refreshDrawer(); break;
     case 'toggle-id': S.showId = !S.showId; refreshDrawer(); break;
   }
