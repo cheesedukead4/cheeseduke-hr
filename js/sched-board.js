@@ -2,8 +2,8 @@
  * 人事工作看板｜「班表」頁（#sched）：各部門班表總覽、部門填寫連結、員工名單（從 Apollo 匯出貼上）、鎖定、匯出
  * ---------------------------------------------------------------
  * 資料（HRStore）：
- *   staff   { id, no: Apollo 員工編號, name, dept: 部門名稱, title, kind: 正職/兼職…, on: 在職, order, updatedAt, updatedBy }
- *   depts   { id, name: 部門名稱, t: 填寫連結代碼（32 碼）, on, at, by }；{ id: '_cfg', anchor: 四週變形起算日, shifts: 班別 [{ c, n, s, e, b, d }] }
+ *   staff   { id, no: Apollo 員工編號, name, dept: 部門名稱, title, kind: 正職/兼職…, on: 在職, nosched: 不需要班表, order, updatedAt, updatedBy }
+ *   depts   { id, name: 部門名稱, t: 填寫連結代碼（32 碼）, on, at, by }；{ id: '_cfg', anchor: 四週變形起算日, shifts: 班別 [{ c, n, s, e, b, d }], skip: [不需要班表的部門] }
  *   sched   （sched_YYYYMM）員工 { id: 'YYYY-MM|員工id', date, sid, dept, days }、月設定 { id: 'YYYY-MM|_m', target, hol }、
  *           部門狀態 { id: 'YYYY-MM|_d|部門id', dept, st: draft|sent, sentAt, sentBy, lock, lockAt, lockBy }
  * 部門主管用連結 sched.html#t=代碼 填（雲端後端 schInfo／schSave）；人資在這裡看、改（直接存 HRStore）、鎖定（鎖定後部門連結不能改）、匯出。
@@ -44,16 +44,26 @@ const monthRecs = m => ST.list('sched').filter(r => r && r.date === m);
 const monthCfg = m => ST.get('sched', `${m}|_m`) || {};
 const deptRec = name => deptRecs().find(d => d.name === name) || null;
 const statusRec = (m, d) => d ? ST.get('sched', `${m}|_d|${d.id}`) : null;
+const skipSet = () => new Set(Array.isArray(cfg().skip) ? cfg().skip : []);
+const needSched = s => s.on !== false && !s.nosched;
+/** 要排班表的部門（「班表設定」勾了不需要班表的部門、全部員工都不需要班表的部門不列） */
 function deptNames(){
+  const out = [], sk = skipSet();
+  for (const s of staffAll()) if (needSched(s) && s.dept && !sk.has(s.dept) && !out.includes(s.dept)) out.push(s.dept);
+  for (const d of deptRecs()) if (!sk.has(d.name) && !out.includes(d.name) && monthRecs(B.month).some(r => r.dept === d.name && !(ST.get('staff', r.sid) || {}).nosched)) out.push(d.name);
+  return out;
+}
+/** 所有部門（「不需要班表的部門」設定用） */
+function allDeptNames(){
   const out = [];
   for (const s of staffAll()) if (s.on !== false && s.dept && !out.includes(s.dept)) out.push(s.dept);
-  for (const d of deptRecs()) if (!out.includes(d.name) && (d.t || monthRecs(B.month).some(r => r.dept === d.name))) out.push(d.name);
+  for (const d of deptRecs()) if (!out.includes(d.name)) out.push(d.name);
   return out;
 }
 /** 部門這個月要排的人：在職的部門員工，加上這個月已經排在這個部門的人 */
 function staffOfDept(name, m){
   const have = new Set(monthRecs(m).filter(r => r.sid && r.dept === name).map(r => r.sid));
-  return staffAll().filter(s => (s.on !== false && (s.dept || NO_DEPT) === name) || have.has(s.id));
+  return staffAll().filter(s => !s.nosched && ((s.on !== false && (s.dept || NO_DEPT) === name) || have.has(s.id)));
 }
 function daysOf(m, sid){ const r = ST.get('sched', `${m}|${sid}`); return r ? SC.cleanDays(r.days, m) : {}; }
 function ctxOf(m, sid){
@@ -142,7 +152,7 @@ function confirmBtn(key, label, again, cls){
 }
 function renderDepts(){
   const el = document.getElementById('sc-depts'), c = can(), names = deptNames(), all = staffAll();
-  const noDept = all.filter(s => s.on !== false && !s.dept).length;
+  const noDept = all.filter(s => needSched(s) && !s.dept).length, sk = [...skipSet()], noNeed = all.filter(s => s.on !== false && s.nosched && !skipSet().has(s.dept)).length;
   if (!all.length) {
     el.innerHTML = `<div class="ov-h"><h2>各部門班表</h2></div><p class="sc-empty">還沒有員工名單。${c ? '先在下面「員工名單」貼上從 Apollo 匯出的員工資料，就會依部門列出來，再產生各部門的填寫連結。' : '請有「班表管理」權限的人匯入員工名單。'}</p>`;
     return;
@@ -164,6 +174,7 @@ function renderDepts(){
   el.innerHTML = `<div class="ov-h"><h2>各部門班表</h2><span class="sc-sub">${+B.month.slice(5)} 月・部門主管用填寫連結填好後按「送出給人資」，確認沒問題再鎖定、匯出</span></div>
     ${noDept ? `<p class="sc-warn">有 ${noDept} 位在職員工沒有部門，班表連結看不到他們；請在下面「員工名單」填上部門。</p>` : ''}
     <div class="sc-tw"><table class="sc-t"><thead><tr><th scope="col">部門</th><th scope="col">人數</th><th scope="col">排班進度</th><th scope="col">狀態</th><th scope="col">工時檢查</th><th scope="col">填寫連結</th><th scope="col"><span class="sr-only">動作</span></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${sk.length || noNeed ? `<p class="foot-note">${sk.length ? `不需要班表的部門：${sk.map(esc).join('、')}（在「班表設定」改）。` : ''}${noNeed ? `另有 ${noNeed} 位員工設成不需要班表（在「員工名單」的「要排班」改）。` : ''}</p>` : ''}
     ${c ? '<p class="foot-note">「複製連結」後用 LINE 或 Email 傳給部門主管；連結不用登入、只看得到自己部門。連結外流時按「換新連結」，舊的就不能用了。</p>' : ''}`;
 }
 function renderGrid(){
@@ -350,7 +361,8 @@ function editShift(t){
 /* ---------- 員工名單 ---------- */
 function renderStaff(){
   const el = document.getElementById('sc-staff'), all = staffAll(), on = all.filter(s => s.on !== false).length, c = can();
-  el.querySelector('.sc-sum').textContent = `員工名單（在職 ${on} 人${all.length > on ? `，離職 ${all.length - on} 人` : ''}）`;
+  const need = all.filter(s => needSched(s) && !skipSet().has(s.dept)).length;
+  el.querySelector('.sc-sum').textContent = `員工名單（在職 ${on} 人，要排班 ${need} 人${all.length > on ? `，離職 ${all.length - on} 人` : ''}）`;
   const q = B.q.toLowerCase(), list = all.filter(s => !q || [s.no, s.name, s.dept, s.title, s.kind].some(x => String(x || '').toLowerCase().includes(q)));
   const depts = [...new Set(all.map(s => s.dept).filter(Boolean))];
   const imp = c ? `<div class="sc-imp">
@@ -366,12 +378,13 @@ function renderStaff(){
       <td>${c ? `<input class="inp" data-sid="${esc(s.id)}" data-f="title" value="${esc(s.title || '')}" maxlength="40" aria-label="${esc(s.name)} 職稱">` : esc(s.title || '')}</td>
       <td>${c ? `<input class="inp" data-sid="${esc(s.id)}" data-f="kind" value="${esc(s.kind || '')}" maxlength="20" list="sc-kl" aria-label="${esc(s.name)} 身分">` : esc(s.kind || '')}</td>
       <td>${c ? `<label class="sc-on"><input type="checkbox" data-sid="${esc(s.id)}" data-f="on" aria-label="${esc(s.name)} 在職"${s.on !== false ? ' checked' : ''}>在職</label>` : s.on !== false ? '在職' : '離職'}</td>
+      <td>${skipSet().has(s.dept) ? '<span class="sc-sub">部門不需要</span>' : c ? `<label class="sc-on"><input type="checkbox" data-sid="${esc(s.id)}" data-f="sched" aria-label="${esc(s.name)} 要排班"${s.nosched ? '' : ' checked'}>要排班</label>` : s.nosched ? '不需要' : '要'}</td>
       <td>${c ? confirmBtn('del|' + s.id, '刪除', '確定刪除？', 'sm') : ''}</td></tr>`).join('');
   document.getElementById('sc-staff-body').innerHTML = `${imp}
     ${all.length ? `<div class="sc-row"><input class="inp" id="sc-q" type="search" placeholder="搜尋編號、姓名、部門" aria-label="搜尋員工" value="${esc(B.q)}"></div>
-    <div class="sc-tw"><table class="sc-t sc-staff"><thead><tr><th scope="col">員工編號</th><th scope="col">姓名</th><th scope="col">部門</th><th scope="col">職稱</th><th scope="col">身分</th><th scope="col">在職</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows || '<tr><td colspan="7">找不到符合的員工</td></tr>'}</tbody></table></div>
+    <div class="sc-tw"><table class="sc-t sc-staff"><thead><tr><th scope="col">員工編號</th><th scope="col">姓名</th><th scope="col">部門</th><th scope="col">職稱</th><th scope="col">身分</th><th scope="col">在職</th><th scope="col">班表</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows || '<tr><td colspan="8">找不到符合的員工</td></tr>'}</tbody></table></div>
     <datalist id="sc-dl">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist><datalist id="sc-kl"><option value="正職"><option value="兼職"><option value="工讀"></datalist>
-    <p class="foot-note">身分寫「正職」（或空白）的人會和「正職應排」時數比對；兼職、工讀不比對。離職的人班表連結看不到，已經排的班表會留著。</p>` : ''}`;
+    <p class="foot-note">取消「要排班」的人不會出現在部門班表、不會匯出（例如不用排班的主管、辦公室同仁）；重新匯入名單不會改掉這個設定。身分寫「正職」（或空白）的人會和「正職應排」時數比對；兼職、工讀不比對。離職的人班表連結看不到，已經排的班表會留著。搜尋框打部門名稱可以只看那個部門。</p>` : ''}`;
 }
 
 const COLS = [   // Apollo 匯出的標題 → 欄位（依序找，先找到的優先）
@@ -460,6 +473,9 @@ function renderSet(){
   document.getElementById('sc-set-body').innerHTML = `
     <div class="sc-row"><label class="sc-f">四週變形起算日<input class="inp" type="date" id="sc-anchor" value="${esc(anchor())}"${c ? '' : ' disabled'}></label></div>
     <p class="sc-sub">每 4 週（28 天）一個週期從這天開始算：週期內正常工時不超過 160 小時、例假＋休息日至少 8 天，前後兩週各至少 2 天例假。請設成公司實際採用的變形工時起算日（預設 ${SC.DEFAULT_ANCHOR}）。</p>
+    <h3 class="sc-h3">不需要班表的部門</h3>
+    <p class="sc-sub">勾了的部門不會出現在「各部門班表」、不會匯出，原本的填寫連結也會停用（之後要用再到「各部門班表」產生新的連結）。部門裡只有幾個人不用排班的話，改在「員工名單」取消那幾個人的「要排班」。</p>
+    <div class="sc-row sc-skip">${allDeptNames().map(n => `<label class="sc-on"><input type="checkbox" data-skip="${esc(n)}"${skipSet().has(n) ? ' checked' : ''}${c ? '' : ' disabled'}>${esc(n)}</label>`).join('') || '<span class="sc-sub">還沒有部門</span>'}</div>
     <h3 class="sc-h3">匯出 Apollo 的狀態代碼</h3>
     <p class="sc-sub">上班 W0001（要有班次代碼）、休息日 H0002、例假 H0003 固定；下面兩種看公司在 Apollo 怎麼用：</p>
     <div class="sc-row sc-mrow">
@@ -574,6 +590,18 @@ function bind(root){
     }
     else if (t.id === 'sc-anchor') { if (SC.isDate(t.value)) saveCfg({anchor:t.value}); }
     else if (t.id === 'sc-ap-H' || t.id === 'sc-ap-L') saveCfg({apollo:Object.assign(apMap(), {[t.id.slice(-1)]:t.value})});
+    else if (t.dataset.skip) {
+      const name = t.dataset.skip, sk = skipSet();
+      if (t.checked) {
+        sk.add(name);
+        const d = deptRec(name);
+        if (d && (d.t || d.on !== false)) ST.save('depts', Object.assign({}, d, {t:'', on:false, at:Date.now(), by:me()}));   // 填寫連結一起停用
+        if (B.dept === name) B.dept = '';
+      } else sk.delete(name);
+      saveCfg({skip:[...sk]});
+      toast(t.checked ? `「${name}」不需要班表了（填寫連結已停用）` : `「${name}」要排班表了；需要的話到「各部門班表」產生填寫連結`);
+      render();
+    }
     else if (t.dataset.sh != null && t.dataset.f) editShift(t);
     else if (t.dataset.shk) { setShiftDept([t.dataset.shk], t.checked); }
     else if (t.id === 'sc-shd') { B.shDept = t.value; render(); }
@@ -589,6 +617,7 @@ function bind(root){
       const s = ST.get('staff', t.dataset.sid); if (!s) return;
       const f = t.dataset.f, v = f === 'on' ? t.checked : String(t.value).replace(/\s+/g, ' ').trim();
       if (f === 'name' && !v) { t.value = s.name; return; }
+      if (f === 'sched') { ST.save('staff', Object.assign({}, s, {nosched: !t.checked, updatedAt:Date.now(), updatedBy:me()})); toast(t.checked ? `${s.name} 要排班` : `${s.name} 不需要班表了（部門班表、匯出都不會有）`); return; }
       ST.save('staff', Object.assign({}, s, {[f]:v, updatedAt:Date.now(), updatedBy:me()}));
     }
   });
@@ -668,7 +697,7 @@ function download(name, text){
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 function exportList(){
-  const names = B.dept ? [B.dept] : deptNames().concat(staffAll().some(s => s.on !== false && !s.dept) ? [NO_DEPT] : []);
+  const names = B.dept ? [B.dept] : deptNames().concat(staffAll().some(s => needSched(s) && !s.dept) ? [NO_DEPT] : []);
   return names.flatMap(n => staffOfDept(n, B.month).map(s => ({s, dept:n})));
 }
 const hDec = t => t ? fmtH(Math.round((+t.slice(0, 2) + +t.slice(3, 5) / 60) * 100) / 100) : '';
