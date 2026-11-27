@@ -19,7 +19,8 @@ const NO_DEPT = '（未分部門）';
 const now = new Date();
 const B = {
   month: SC.shiftMonth(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`, now.getDate() >= 15 ? 1 : 0),
-  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:''
+  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:'',
+  shDept:'', shQ:'', shOnly:false, shAll:false   // 班別設定：「選部門、勾班別」選的部門、搜尋、只看已勾；全部班別明細有沒有打開
 };
 const toast = m => { if (B.ctx.toast) B.ctx.toast(m); };
 const can = () => !!AU && AU.can('sched');
@@ -250,8 +251,47 @@ function shPreview(){
     ${x.bad.length ? `<p class="sc-sub">上下班時間看不懂（時間先留空）：${x.bad.slice(0, 8).map(esc).join('、')}</p>` : ''}
     <div class="sc-row"><button type="button" class="btn primary" data-sc="sh-import">匯入</button><button type="button" class="btn" data-sc="sh-cancel">取消</button></div></div>`;
 }
+const deptList = x => String(x.d || '').split(/[,，、;；\s]+/).filter(Boolean);
+const shMatch = (x, q) => !q || (x.c + ' ' + x.n).toLowerCase().includes(q);
+/** 選部門、勾班別：勾了＝把部門加進那個班別的「適用部門」 */
+function shPickHTML(list, depts){
+  if (!depts.length) return '';
+  if (!depts.includes(B.shDept)) B.shDept = depts[0];
+  const name = B.shDept, q = B.shQ.trim().toLowerCase(), has = x => deptList(x).includes(name);
+  const picked = list.filter(has).length, open = list.filter(x => !x.d).length;
+  const shown = list.filter(x => shMatch(x, q) && (!B.shOnly || has(x)));
+  return `<div class="sc-shpick">
+    <h3 class="sc-h3">選部門、勾班別</h3>
+    <div class="sc-row">
+      <label class="sc-f" for="sc-shd">部門</label><select class="inp" id="sc-shd">${depts.map(d => `<option${d === name ? ' selected' : ''}>${esc(d)}</option>`).join('')}</select>
+      <input class="inp" id="sc-shq2" type="search" placeholder="找代碼或名稱，例如：京、物流、A0" aria-label="找班別" value="${esc(B.shQ)}">
+      <label class="sc-on"><input type="checkbox" id="sc-shonly"${B.shOnly ? ' checked' : ''}>只看已勾的</label>
+    </div>
+    <p class="sc-sub" role="status"><b>${esc(name)}</b> 已勾 <b>${picked}</b> 種${picked ? '：這個部門的主管只看得到勾的這些。' : `：還沒勾，主管看得到所有沒指定部門的班別（${open} 種）。`}勾了會馬上存。</p>
+    <div class="sc-row"><button type="button" class="btn sm" data-sc="shk-all"${shown.length ? '' : ' disabled'}>列出的 ${shown.length} 種全部勾選</button><button type="button" class="btn sm" data-sc="shk-none"${shown.some(has) ? '' : ' disabled'}>列出的全部取消</button></div>
+    <div class="sc-shk-list">${shown.map(x => {
+      const on = has(x), others = deptList(x).filter(d => d !== name);
+      return `<label class="sc-shk${on ? ' on' : ''}"><input type="checkbox" id="sc-shk-${esc(x.c)}" data-shk="${esc(x.c)}"${on ? ' checked' : ''}><b>${esc(x.c)}</b><span>${esc(x.n) || '（沒有名稱）'}</span>${others.length ? `<small>也給：${esc(others.join('、'))}</small>` : ''}</label>`;
+    }).join('') || '<p class="sc-empty">找不到符合的班別</p>'}</div>
+  </div>`;
+}
+/** 把部門加進／移出這些班別的「適用部門」 */
+function setShiftDept(codes, on){
+  const name = B.shDept, set = new Set(codes), list = shiftsAll();
+  let n = 0;
+  for (const x of list) {
+    if (!set.has(x.c)) continue;
+    const ds = deptList(x), i = ds.indexOf(name);
+    if (on && i < 0) { ds.push(name); n++; }
+    if (!on && i >= 0) { ds.splice(i, 1); n++; }
+    x.d = ds.join(', ');
+  }
+  if (n) saveCfg({shifts:list});
+  return n;
+}
 function renderShifts(){
   const el = document.getElementById('sc-shift'), list = shiftsAll(), c = can(), depts = deptNames();
+  const box = el.querySelector('.sc-shk-list'), keepTop = box ? box.scrollTop : 0;   // 勾完重畫時清單不要跳回最上面
   el.querySelector('.sc-sum').textContent = `班別設定（${list.length ? list.length + ' 種' : '還沒設定'}）`;
   const rows = list.map((x, i) => {
     const h = x.s && x.e ? fmtH(SC.hoursOf({k:'w', s:x.s, e:x.e, b:x.b})) + ' 小時' : '—';
@@ -267,8 +307,10 @@ function renderShifts(){
       <textarea class="inp" id="sc-sh-paste" data-keep="1" rows="3" placeholder="班次代碼	班次名稱&#10;A099	研發7點(休半小)"></textarea>
       <div class="sc-row"><button type="button" class="btn" data-sc="sh-parse">讀取貼上的內容</button><span class="sp"></span><button type="button" class="btn" data-sc="sh-add">新增一種班別</button></div>
       ${shPreview()}</div>` : ''}
-    ${list.length ? `<div class="sc-tw"><table class="sc-t sc-staff sc-shifts"><thead><tr><th scope="col">代碼</th><th scope="col">名稱</th><th scope="col">上班</th><th scope="col">下班</th><th scope="col">休息（小時）</th><th scope="col">工時</th><th scope="col">適用部門</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${c && list.length ? shPickHTML(list, depts) : ''}
+    ${list.length ? `<details class="sc-shall"${B.shAll || !c ? ' open' : ''}><summary>全部班別明細（改代碼、名稱、上下班時間、適用部門）</summary><div class="sc-tw"><table class="sc-t sc-staff sc-shifts"><thead><tr><th scope="col">代碼</th><th scope="col">名稱</th><th scope="col">上班</th><th scope="col">下班</th><th scope="col">休息（小時）</th><th scope="col">工時</th><th scope="col">適用部門</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows}</tbody></table></div></details>
       <datalist id="sc-dl2">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist>` : `<p class="sc-empty">${c ? '還沒有班別：貼上 Apollo 的班別清單，或按「新增一種班別」。沒有設定班別時，部門要自己填上下班時間。' : '還沒有設定班別。'}</p>`}`;
+  const nb = el.querySelector('.sc-shk-list'); if (nb && keepTop) nb.scrollTop = keepTop;
 }
 function editShift(t){
   const i = +t.dataset.sh, f = t.dataset.f, list = shiftsAll(), x = list[i];
@@ -461,6 +503,13 @@ function onAct(act, el){
       if (B.confirm !== act) { setConfirm(act); return; }
       B.confirm = ''; ST.remove('staff', arg); toast('已刪除（已經排的班表會留著）'); render(); break;
     }
+    case 'shk-all': case 'shk-none': {
+      const q = B.shQ.trim().toLowerCase(), on = kind === 'shk-all';
+      const codes = shiftsAll().filter(x => shMatch(x, q) && (!B.shOnly || deptList(x).includes(B.shDept))).map(x => x.c);
+      const n = setShiftDept(codes, on);
+      toast(n ? `${B.shDept}：${on ? '勾選' : '取消'} ${n} 種班別` : '沒有要改的');
+      render(); break;
+    }
     case 'sh-parse': { const ta = document.getElementById('sc-sh-paste'); B.shImp = parseShifts(ta ? ta.value : ''); render(); break; }
     case 'sh-cancel': B.shImp = null; render(); break;
     case 'sh-import': {
@@ -502,6 +551,9 @@ function bind(root){
     else if (t.id === 'sc-anchor') { if (SC.isDate(t.value)) saveCfg({anchor:t.value}); }
     else if (t.id === 'sc-ap-H' || t.id === 'sc-ap-L') saveCfg({apollo:Object.assign(apMap(), {[t.id.slice(-1)]:t.value})});
     else if (t.dataset.sh != null && t.dataset.f) editShift(t);
+    else if (t.dataset.shk) { setShiftDept([t.dataset.shk], t.checked); }
+    else if (t.id === 'sc-shd') { B.shDept = t.value; render(); }
+    else if (t.id === 'sc-shonly') { B.shOnly = t.checked; render(); }
     else if (t.id === 'sc-file' && t.files && t.files[0]) {
       const f = t.files[0];
       if (/\.xlsx?$/i.test(f.name)) { B.imp = {err:'請在 Excel 裡全選複製貼上，或另存成 CSV 再選'}; render(); return; }
@@ -514,7 +566,11 @@ function bind(root){
       ST.save('staff', Object.assign({}, s, {[f]:v, updatedAt:Date.now(), updatedBy:me()}));
     }
   });
-  root.addEventListener('input', e => { if (e.target.id === 'sc-q') { B.q = e.target.value.trim(); keep(document.getElementById('sc-staff'), renderStaff); } });
+  root.addEventListener('input', e => {
+    if (e.target.id === 'sc-q') { B.q = e.target.value.trim(); keep(document.getElementById('sc-staff'), renderStaff); }
+    else if (e.target.id === 'sc-shq2') { B.shQ = e.target.value; keep(document.getElementById('sc-shift'), renderShifts); }
+  });
+  root.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('sc-shall')) B.shAll = e.target.open; }, true);
 }
 
 /* ---------- 匯出 ---------- */
