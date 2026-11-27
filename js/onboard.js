@@ -39,7 +39,8 @@ const PERSON = [
   {k:'nat', label:'國籍', req:1, list:'nat'},
   {k:'marital', label:'婚姻狀態', list:'marital'},
   {k:'mil', label:'兵役狀態', list:'mil', hint:'女生和外籍不用填'},
-  {k:'milType', label:'役別', list:'milType'}
+  {k:'milType', label:'役別', list:'milType'},
+  {k:'selfRate', label:'勞退自願提繳率', list:'rate6', suffix:'%', hint:'從薪資另外提撥到您自己的勞退帳戶（可以節稅）；不想提撥選 0%'}
   // 範本還有兵役期間（起迄）、免役原因、入境時間：使用者說不用填（2026-11-27），匯出時留空
 ];
 const CONTACT = [
@@ -102,7 +103,7 @@ function fieldHTML(f, path, val){
   let input;
   if (f.list) {
     const opts = L[f.list] || [];
-    input = `<select id="${id}" data-ap="${esc(path)}"${f.req ? ' aria-required="true"' : ''}><option value="">請選擇</option>${opts.map(o => `<option${o === val ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    input = `<select id="${id}" data-ap="${esc(path)}"${f.req ? ' aria-required="true"' : ''}><option value="">請選擇</option>${opts.map(o => `<option value="${esc(o)}"${o === val ? ' selected' : ''}>${esc(o)}${f.suffix || ''}</option>`).join('')}</select>`;
   } else if (f.area) input = `<textarea id="${id}" data-ap="${esc(path)}" rows="2" maxlength="300">${esc(val)}</textarea>`;
   else input = `<input type="${f.type || 'text'}" id="${id}" data-ap="${esc(path)}" value="${esc(val)}"${f.ph ? ` placeholder="${esc(f.ph)}"` : ''}${f.req ? ' aria-required="true"' : ''}>`;
   const same = f.same ? '<button class="ob-b2 ob-same" type="button" data-same>同戶籍地址</button>' : '';

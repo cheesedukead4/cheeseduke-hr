@@ -193,6 +193,8 @@ function norm(id, d){
     withdrawn: !!d.withdrawn,
     ap: d.ap && typeof d.ap === 'object' ? d.ap : null, apHr: d.apHr && typeof d.apHr === 'object' ? d.apHr : null,   // Apollo 入職資料（新人填／人資填）
     apExp: d.apExp && typeof d.apExp === 'object' ? {at:Number(d.apExp.at) || 0, by:str(d.apExp.by).slice(0, 40), n:Number(d.apExp.n) || 0} : null,
+    ins: d.ins && typeof d.ins === 'object' ? d.ins : null,   // 勞健保加保（人資填）
+    insExp: d.insExp && typeof d.insExp === 'object' ? {at:Number(d.insExp.at) || 0, by:str(d.insExp.by).slice(0, 40), n:Number(d.insExp.n) || 0} : null,
     ofr: d.ofr && /^[a-f0-9]{32}$/.test(d.ofr.t || '') ? {t:d.ofr.t, exp:Number(d.ofr.exp) || 0, job:str(d.ofr.job).slice(0, 80), ans: d.ofr.ans === 'yes' || d.ofr.ans === 'no' ? d.ofr.ans : '', ansAt:Number(d.ofr.ansAt) || 0} : null,
     link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80), name:str(d.link104.name).slice(0, 40)} : null
   };
@@ -628,6 +630,120 @@ async function apExport(id, all){
     AP.err = true;
   }
   AP.busy = false; refreshDrawer();
+}
+/* ---------- 勞健保加保申報檔（勞保局「批次加保」三合一／二合一）：人資在這裡填月薪資、健保投保金額，匯出 xlsx 到勞保局 e 化服務系統上傳 ---------- */
+const INS_GRP = [['1', '台北業務組'], ['2', '北區業務組'], ['3', '中區業務組'], ['4', '南區業務組'], ['5', '高屏業務組'], ['6', '東區業務組']];
+const INS_SP = [['', '一般（不是特殊身分）'], ['1', '部分工時人員'], ['2', '職業工會低收入戶'], ['3', '董事（實際從事勞動）'], ['4', '受委任工作者（如委任經理人）'], ['5', '雇主（單位負責人）'], ['6', '上岸候船'],
+  ['7', '庇護性身心障礙就業者'], ['8', '部分工時及庇護性身心障礙就業者'], ['A', '公法救助及部分工時人員'], ['B', '公法救助'], ['S', '建教生及部分工時人員'], ['T', '建教生']];
+const INS_FR = [['auto', '依國籍自動判斷'], ['', '本國籍'], ['Y', '外籍'], ['1', '外籍配偶（含港澳配偶）'], ['2', '大陸配偶'], ['L', '永居外專']];
+const INS_CT = [['auto', '自動（本國強制提繳）'], ['1', '強制提繳對象'], ['2', '自願提繳對象'], ['3', '雇主自願提繳'], ['', '不提繳勞退']];
+const INS_OCC = [['', '一般（勞保＋就保）'], ['1', '僅參加災保：已領勞保老年給付'], ['2', '僅參加災保：未領老年給付且年逾 65 歲']];
+const INS = {msg:'', msgId:'', err:false, busy:false, coEdit:false};
+const insCo = () => { const c = (ST.get('tpl', '_cfg') || {}).ins; return c && typeof c === 'object' ? c : {}; };
+const offerWage = h => { const m = String((h.offer && h.offer.f.pay) || '').replace(/,/g, '').match(/月薪\D{0,4}(\d{4,6})/); return m ? m[1] : ''; };
+const insForeign = h => { const i = h.ins || {}; return typeof i.foreign === 'string' ? i.foreign : (h.ap && h.ap.nat && h.ap.nat !== '台灣' ? 'Y' : ''); };
+/** 還缺什麼：規則和雲端後端 insMissing_ 相同 */
+function insMiss(h){
+  const co = insCo(), ap = h.ap || {}, i = h.ins || {}, t = i.type === '2' ? '2' : '3', m = [];
+  if (!/^\d{8}$/.test(co.no || '')) m.push('公司保險證號（8 位數字）');
+  if (!/^[A-Z]$/.test(String(co.chk || '').toUpperCase())) m.push('保險證號檢查碼');
+  if (t === '3' && !/^\d{9}$/.test(co.nhi || '')) m.push('健保投保單位代號（9 位數字）');
+  if (t === '3' && !/^[1-6]$/.test(co.grp || '')) m.push('健保業務組別');
+  if (!ap.idNo) m.push('身分證號');
+  if (!(ap.last || ap.first || ap.en)) m.push('姓名');
+  if (!isDate(ap.birth || '')) m.push('生日');
+  if (!/^\d+$/.test(String(i.wage || ''))) m.push('月薪資總額');
+  if (t === '3' && !/^\d+$/.test(String(i.nhi || ''))) m.push('健保投保金額');
+  if (t === '3' && insForeign(h)) m.push('外籍同仁要用二合一（健保另外向健保署申報）');
+  if (!apStart(h)) m.push('報到日期');
+  return m;
+}
+function insHTML(h){
+  if (!AP_STAGES.includes(h.stage) || h.stage === 'offer') return '';
+  const co = insCo(), i = h.ins || {}, ed = canEdit(), t = i.type === '2' ? '2' : '3', miss = insMiss(h);
+  const opt = (list, v) => list.map(([k, n]) => `<option value="${esc(k)}"${k === v ? ' selected' : ''}>${esc(n)}</option>`).join('');
+  const sel = (k, list, v) => `<select class="inp" id="ins-${k}" data-ins="${k}"${ed ? '' : ' disabled'}>${opt(list, v)}</select>`;
+  const inp = (k, v, attrs = '') => `<input class="inp" id="ins-${k}" data-ins="${k}" value="${esc(v || '')}" ${attrs}${ed ? '' : ' disabled'}>`;
+  const f = (k, label, html, req) => `<div class="f"><label for="ins-${k}">${label}${req ? ' *' : ''}</label>${html}</div>`;
+  const coOk = /^\d{8}$/.test(co.no || '') && /^[A-Za-z]$/.test(co.chk || '') && /^\d{9}$/.test(co.nhi || '') && /^[1-6]$/.test(co.grp || '');
+  const coForm = INS.coEdit || !coOk ? `<div class="grid2">
+      ${f('co-no', '保險證號（8 位數字）', `<input class="inp" id="ins-co-no" data-insco="no" value="${esc(co.no || '')}" inputmode="numeric" maxlength="8"${ed ? '' : ' disabled'}>`, 1)}
+      ${f('co-chk', '保險證號檢查碼（第 9 碼英文）', `<input class="inp" id="ins-co-chk" data-insco="chk" value="${esc(co.chk || '')}" maxlength="1"${ed ? '' : ' disabled'}>`, 1)}
+      ${f('co-nhi', '健保投保單位代號（9 位數字）', `<input class="inp" id="ins-co-nhi" data-insco="nhi" value="${esc(co.nhi || '')}" inputmode="numeric" maxlength="9"${ed ? '' : ' disabled'}>`, 1)}
+      ${f('co-grp', '健保業務組別', `<select class="inp" id="ins-co-grp" data-insco="grp"${ed ? '' : ' disabled'}><option value="">請選擇</option>${opt(INS_GRP, co.grp || '')}</select>`, 1)}
+    </div>${ed ? '<div class="fl-row"><button class="btn sm" type="button" data-act="ins-co-save">儲存公司投保資料</button></div>' : ''}`
+    : `<p class="muted">公司：保險證號 ${esc(co.no)}${esc(String(co.chk).toUpperCase())}・健保投保單位 ${esc(co.nhi)}・${esc((INS_GRP.find(g => g[0] === co.grp) || [])[1] || '')}${ed ? ' <button class="link" type="button" data-act="ins-co-edit">修改</button>' : ''}</p>`;
+  const wage = i.wage || offerWage(h);
+  const ex = h.insExp ? `<p class="muted">已在 ${fmtTime(h.insExp.at)} 匯出加保檔${h.insExp.by ? `（${esc(h.insExp.by)}）` : ''}</p>` : '';
+  const others = canPii() ? [...S.hires.values()].filter(x => x.id !== h.id && AP_STAGES.includes(x.stage) && x.stage !== 'offer' && !x.insExp && x.ins && !insMiss(x).length) : [];
+  return `<section class="sec"><h3>勞健保加保 <span class="h-count">${miss.length ? '還沒齊' : '可以匯出'}</span></h3>
+    <p class="muted">匯出勞保局 e 化服務系統的「批次加保」檔（xlsx），到「批次申報」上傳。一般同仁用三合一（勞保／就保／災保／勞退／健保）；健保在別處保的兼職、外籍同仁用二合一（勞保／就保／災保／勞退）。</p>
+    ${coForm}
+    <div class="grid2">
+      ${f('type', '加保格式', sel('type', [['3', '三合一（含健保）'], ['2', '二合一（不含健保）']], t), 1)}
+      ${f('wage', '月薪資總額', inp('wage', wage, 'inputmode="numeric" maxlength="7" placeholder="例如：32000"'), 1)}
+      ${t === '3' ? f('nhi', '健保投保金額', inp('nhi', i.nhi || '', 'inputmode="numeric" maxlength="7" placeholder="照健保投保金額分級表"'), 1) : ''}
+      ${f('special', '特殊身分別', sel('special', INS_SP, i.special || ''))}
+      ${f('foreign', '外籍別', sel('foreign', INS_FR, typeof i.foreign === 'string' ? i.foreign : 'auto'))}
+      ${f('contrib', '勞退提繳身分', sel('contrib', INS_CT, typeof i.contrib === 'string' ? i.contrib : 'auto'))}
+      ${f('rate', '雇主提繳率（%）', inp('rate', i.rate || '6', 'inputmode="decimal" maxlength="3"'))}
+      ${f('occ', '僅參加災保條件', sel('occ', INS_OCC, i.occ || ''))}
+    </div>
+    <p class="muted">勞退自願提繳率（新人在報到連結選）：${h.ap && h.ap.selfRate ? esc(h.ap.selfRate) + '%' : '還沒選（當 0%）'}。月薪資總額未達基本工資的部分工時人員，特殊身分別請選「部分工時人員」。</p>
+    ${miss.length ? `<p class="muted">還缺：${esc(miss.join('、'))}</p>` : ''}
+    ${ex}
+    ${INS.msg && INS.msgId === h.id ? `<p class="imp-msg${INS.err ? ' err' : ''}" role="status">${esc(INS.msg)}</p>` : ''}
+    <div class="fl-row">
+      ${ed ? '<button class="btn sm" type="button" data-act="ins-save">儲存勞健保資料</button>' : ''}
+      ${canPii() ? `<button class="btn sm primary" type="button" data-act="ins-export"${!miss.length && !INS.busy ? '' : ' disabled'}>${INS.busy ? '匯出中…' : '匯出加保檔'}</button>` : '<span class="muted">要有「查看證件」權限才能匯出</span>'}
+      ${!miss.length && others.length && !INS.busy ? `<button class="btn sm" type="button" data-act="ins-export-all">連同其他 ${others.length} 位一起匯出</button>` : ''}
+    </div></section>`;
+}
+function insRead(){
+  const i = {};
+  document.querySelectorAll('[data-ins]').forEach(el => { const k = el.dataset.ins, v = String(el.value || '').trim(); if ((k === 'foreign' || k === 'contrib') && v === 'auto') return; if (v || k === 'foreign' || k === 'contrib' || k === 'special' || k === 'occ') i[k] = v; });
+  return i;
+}
+function insSave(id, quiet){
+  const h = S.hires.get(id); if (!h || !canEdit()) return false;
+  const i = insRead();
+  if (i.rate && !/^\d+(\.\d+)?$/.test(i.rate)) { INS.msg = '雇主提繳率請填數字（例如 6）'; INS.err = true; INS.msgId = id; refreshDrawer(); return false; }
+  saveHire(id, r => { r.ins = Object.assign({}, i, {at:Date.now(), by:myName()}); });
+  pullFromStore(); if (!quiet) { INS.msg = '已儲存勞健保資料'; INS.err = false; INS.msgId = id; } refreshDrawer();
+  return true;
+}
+function insCoSave(id){
+  if (!canEdit()) return;
+  const v = k => String((document.querySelector(`[data-insco="${k}"]`) || {}).value || '').trim();
+  const c = {no:v('no'), chk:v('chk').toUpperCase(), nhi:v('nhi'), grp:v('grp')};
+  const bad = !/^\d{8}$/.test(c.no) ? '保險證號要 8 位數字' : !/^[A-Z]$/.test(c.chk) ? '檢查碼是 1 個英文字母' : !/^\d{9}$/.test(c.nhi) ? '健保投保單位代號要 9 位數字' : !c.grp ? '請選健保業務組別' : '';
+  if (bad) { INS.msg = bad; INS.err = true; INS.msgId = id; refreshDrawer(); return; }
+  const cur = ST.get('tpl', '_cfg');
+  ST.save('tpl', Object.assign(cur ? JSON.parse(JSON.stringify(cur)) : {id:'_cfg'}, {ins: Object.assign({}, c, {at:Date.now(), by:myName()}), updatedAt:Date.now(), updatedBy:myName()}));
+  INS.coEdit = false; INS.msg = '已儲存公司投保資料（之後每個人都會用這份）'; INS.err = false; INS.msgId = id; pullFromStore(); refreshDrawer();
+}
+async function insExport(id, all){
+  const h = S.hires.get(id); if (!h || !canPii() || INS.busy) return;
+  if (canEdit() && document.querySelector('[data-ins]') && !insSave(id, true)) return;
+  const ids = [id].concat(all ? [...S.hires.values()].filter(x => x.id !== id && AP_STAGES.includes(x.stage) && x.stage !== 'offer' && !x.insExp && x.ins && !insMiss(x).length).map(x => x.id) : []).slice(0, 30);
+  INS.busy = true; INS.msg = '正在產生勞保局加保檔（約 20 秒）…'; INS.err = false; INS.msgId = id; refreshDrawer();
+  try {
+    await ST.syncNow();
+    const j = await AU.api('insExport', {ids});
+    if (!j.ok) throw Object.assign(new Error(j.message || '匯出失敗'), {j});
+    const bin = atob(j.data), arr = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+    const url = URL.createObjectURL(new Blob([arr], {type:j.mime})), a = document.createElement('a');
+    a.href = url; a.download = j.name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    INS.msg = `已下載 ${j.name}（三合一 ${j.three} 位、二合一 ${j.two} 位）。到勞保局 e 化服務系統「批次申報」上傳，三合一、二合一要分開上傳。`;
+    ST.syncNow();
+  } catch (e) {
+    const miss = e.j && e.j.missing;
+    INS.msg = miss ? `還不能匯出：${miss.map(x => `${x.name}（${x.miss.slice(0, 4).join('、')}${x.miss.length > 4 ? '…' : ''}）`).join('；')}` : (e.message || '匯出失敗，請再試一次');
+    INS.err = true;
+  }
+  INS.busy = false; refreshDrawer();
 }
 /* ---------- Offer 錄取通知書：看板填好排隊，hr@ 的履歷篩選程式約 5 分鐘內用部門範本產生 PDF、用 hr@ 寄出，PDF 傳回看板 ---------- */
 const OFFER_FORMAL = true;    // 2026-11-26 測試成功後打開：可以正式寄給新人（寄出前再確認一次），寄出後可用 104 聊聊通知
@@ -2530,8 +2646,8 @@ function refreshDrawer(){
   $('#d-form').innerHTML = h.form ? formDataHTML(h) : '';
   $('#iv-meta').textContent = h.ivAt ? `最後更新 ${fmtTime(h.ivAt)}${h.ivBy ? '・' + h.ivBy : ''}` : '';
   const steps = stepsHTML(h), ext = extHTML(h);
-  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h), offer = offerHTML(h), apo = apolloHTML(h);
-  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + apo + docs + steps + offer + ext : offer + onb + apo + steps + ext + docs;
+  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h), offer = offerHTML(h), apo = apolloHTML(h), ins = insHTML(h);
+  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + apo + ins + docs + steps + offer + ext : offer + onb + apo + ins + steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
   const jb = $('#d-job'), af = jb.contains(document.activeElement) ? document.activeElement.id : '';
   jb.hidden = h.stage !== 'interview' || (!S.jobs.length && !isAdmin());
@@ -2999,6 +3115,11 @@ $('#drawer').addEventListener('click', e => {
     case 'onb-send': { const h1 = onbEnsure(id); if (h1 && !hireSend(h1, onbText(h1))) toast('找不到 104 履歷或聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
     case 'onb-copy': { const h1 = onbEnsure(id); if (h1) { copyText(onbText(h1)); toast('已複製報到訊息，貼到 LINE 或簡訊傳給新人'); } refreshDrawer(); break; }
     case 'ap-hr-save': apHrSave(id); break;
+    case 'ins-save': insSave(id); break;
+    case 'ins-co-save': insCoSave(id); break;
+    case 'ins-co-edit': INS.coEdit = true; refreshDrawer(); break;
+    case 'ins-export': insExport(id, false); break;
+    case 'ins-export-all': insExport(id, true); break;
     case 'ap-export': apExport(id, false); break;
     case 'ap-export-all': apExport(id, true); break;
     case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
