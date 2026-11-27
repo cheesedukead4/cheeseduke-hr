@@ -8,7 +8,8 @@
  *           部門狀態 { id: 'YYYY-MM|_d|部門id', dept, st: draft|sent, sentAt, sentBy, lock, lockAt, lockBy }
  * 部門主管用連結 sched.html#t=代碼 填（雲端後端 schInfo／schSave）；人資在這裡看、改（直接存 HRStore）、鎖定（鎖定後部門連結不能改）、匯出。
  * 權限：sched（班表管理）才能匯入名單、產生連結、修改、鎖定、匯出；其他人只能看。
- * Apollo 排班匯入範本還沒拿到：目前匯出「明細」和「總表」兩種通用 CSV，拿到範本後在 exportApollo 加上範本格式。
+ * 匯出：Apollo 班表匯入檔（.xlsx，格式照 Apollo「班表匯入範本」的「匯入檔」工作表；對照規則在 sched-core.js 的 apolloRows），另有明細／總表 CSV。
+ *   國定假日、整天請假要匯成哪個 Apollo 狀態代碼存在 depts 的 _cfg.apollo = { H, L }（「班表設定」）。
  */
 (function () {
 'use strict';
@@ -18,7 +19,7 @@ const NO_DEPT = '（未分部門）';
 const now = new Date();
 const B = {
   month: SC.shiftMonth(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`, now.getDate() >= 15 ? 1 : 0),
-  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}
+  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:''
 };
 const toast = m => { if (B.ctx.toast) B.ctx.toast(m); };
 const can = () => !!AU && AU.can('sched');
@@ -64,7 +65,7 @@ function deptSummary(name, m){
   for (const s of staff) {
     const days = daysOf(m, s.id), all = Object.assign(ctxOf(m, s.id), Object.fromEntries(Object.entries(days).map(([dd, v]) => [`${m}-${dd}`, v])));
     if (Object.keys(days).length) started++;
-    const r = SC.checkStaff({month:m, days:all, anchor:anchor(), target: SC.usesTarget(s) ? Number(mc.target) || 0 : 0});
+    const r = SC.checkStaff({month:m, days:all, anchor:anchor(), target: SC.usesTarget(s) ? Number(mc.target) || 0 : 0, needCode: SC.shiftsFor(cfg().shifts, name).length > 0});
     if (!r.sum.blank) full++;
     errs += r.issues.filter(i => i.sev === 'err').length; warns += r.issues.filter(i => i.sev === 'warn').length;
   }
@@ -112,7 +113,8 @@ function renderTop(){
       <button class="btn icon" type="button" data-sc="next" aria-label="下個月">›</button>
     </div>
     <span class="sp"></span>
-    ${c ? `<button class="btn" type="button" data-sc="exp-detail">匯出明細 CSV</button><button class="btn" type="button" data-sc="exp-matrix">匯出總表 CSV</button>` : ''}`;
+    ${c ? `<button class="btn primary" type="button" data-sc="exp-apollo">匯出 Apollo 匯入檔</button><button class="btn" type="button" data-sc="exp-detail">明細 CSV</button><button class="btn" type="button" data-sc="exp-matrix">總表 CSV</button>` : ''}
+    ${B.expMsg ? `<div class="sc-exp" role="status">${B.expMsg}<button type="button" class="btn icon" data-sc="exp-close" aria-label="關閉匯出結果">✕</button></div>` : ''}`;
 }
 /** 每月設定（人資填寫）：正職應排時數、國定假日；部門填寫頁會顯示，工時檢查用來比對 */
 function renderMonth(){
@@ -195,7 +197,7 @@ function saveCells(changes){
 
 /* ---------- 班別設定 ---------- */
 const SH_COLS = [   // Apollo 班別清單的標題 → 欄位（依序找，先找到的優先）
-  ['c', [/^班別(代碼|代號|編號)$/, /^(代碼|代號|編號)$/, /班別(代碼|代號|編號)/, /^班別$/, /^班次$/]],
+  ['c', [/^班[別次](代碼|代號|編號)$/, /^(代碼|代號|編號)$/, /班[別次](代碼|代號|編號)/, /^班別$/, /^班次$/]],
   ['n', [/^班別名稱$/, /^名稱$/, /(班別|班次)名稱/, /說明|備註/]],
   ['s', [/^上班(時間)?$/, /上班|開始|起始|^起$/]],
   ['e', [/^下班(時間)?$/, /下班|結束|^迄$/]],
@@ -217,22 +219,22 @@ function parseShifts(text){
   const lines = text.split('\n');
   const rows = lines.some(l => l.includes('\t')) ? lines.map(l => l.split('\t')) : parseCSV(text);
   const norm = v => String(v || '').replace(/[\s　]+/g, '').replace(/（/g, '(').replace(/）/g, ')');
-  const hi = rows.slice(0, 15).findIndex(r => r.some(c => /上班|開始/.test(norm(c))));
-  if (hi < 0) return {err:'找不到標題列：要有「上班」（上班時間）那一欄（請連標題列一起複製）'};
+  const hi = rows.slice(0, 15).findIndex(r => r.some(c => /上班|開始|班[別次](代碼|代號|編號)/.test(norm(c))));
+  if (hi < 0) return {err:'找不到標題列：要有「班次代碼」或「班別代碼」那一欄（請連標題列一起複製）'};
   const head = rows[hi].map(norm), map = {}, used = new Set();
   for (const [f, pats] of SH_COLS) for (const p of pats) { const i = head.findIndex((h, j) => !used.has(j) && p.test(h)); if (i >= 0) { map[f] = i; used.add(i); break; } }
-  if (map.s == null || map.e == null) return {err:'找不到「上班」或「下班」欄'};
-  if (map.c == null && map.n == null) return {err:'找不到「班別代碼」或「班別名稱」欄'};
+  if (map.c == null && map.n == null) return {err:'找不到「班次代碼」或「班別代碼」欄'};
   const out = [], bad = [];
   for (const r of rows.slice(hi + 1)) {
     const g = f => map[f] == null ? '' : String(r[map[f]] == null ? '' : r[map[f]]).replace(/[\s　]+/g, ' ').trim();
     const code = SC.cleanCode(g('c') || g('n'));
     if (!code) continue;
-    const st = SC.parseTime(g('s').replace(/^(\d{1,2}:\d{2}):\d{2}$/, '$1')), en = SC.parseTime(g('e').replace(/^(\d{1,2}:\d{2}):\d{2}$/, '$1'));
-    if (!st || !en) { bad.push(code); continue; }
+    const rs = g('s').replace(/^(\d{1,2}:\d{2}):\d{2}$/, '$1'), re = g('e').replace(/^(\d{1,2}:\d{2}):\d{2}$/, '$1');
+    const st = SC.parseTime(rs) || '', en = SC.parseTime(re) || '';
+    if ((rs || re) && !(st && en)) bad.push(code);   // 時間看不懂：代碼照樣匯入，時間留空
     out.push({c:code, n:g('c') ? g('n').slice(0, 20) : '', s:st, e:en, b:parseBreak(g('b'), map.b != null && /分/.test(head[map.b])), d:g('d').slice(0, 200)});
   }
-  if (!out.length) return {err: bad.length ? `上下班時間看不懂：${bad.slice(0, 5).join('、')}` : '標題列下面沒有資料'};
+  if (!out.length) return {err:'標題列下面沒有資料'};
   return {rows:out, bad, head:Object.fromEntries(Object.entries(map).map(([f, i]) => [f, rows[hi][i]]))};
 }
 function shPreview(){
@@ -243,25 +245,26 @@ function shPreview(){
   const L = {c:'代碼', n:'名稱', s:'上班', e:'下班', b:'休息', d:'適用部門'};
   return `<div class="sc-prev" role="status">
     <p>讀到 <b>${x.rows.length}</b> 種班別：新增 <b>${add}</b>、更新 <b>${x.rows.length - add}</b>。對到的欄位：${Object.entries(x.head).map(([f, h]) => `${L[f]}←「${esc(h)}」`).join('、')}</p>
-    <p class="sc-sub">${x.rows.slice(0, 10).map(r => `${esc(r.c)} ${esc(SC.shiftText(r))}`).join('、')}${x.rows.length > 10 ? '…' : ''}</p>
-    ${x.bad.length ? `<p class="sc-sub">上下班時間看不懂、沒有匯入：${x.bad.slice(0, 8).map(esc).join('、')}</p>` : ''}
+    <p class="sc-sub">${x.rows.slice(0, 10).map(r => `${esc(r.c)} ${esc(r.s && r.e ? SC.shiftText(r) : r.n)}`).join('、')}${x.rows.length > 10 ? '…' : ''}</p>
+    ${x.rows.some(r => !(r.s && r.e)) ? `<p class="sc-sub">${x.rows.filter(r => !(r.s && r.e)).length} 種沒有上下班時間：部門選這些班別時要自己填時間（之後會記住最常用的時間）；已經設定過時間的班別不會被清掉。</p>` : ''}
+    ${x.bad.length ? `<p class="sc-sub">上下班時間看不懂（時間先留空）：${x.bad.slice(0, 8).map(esc).join('、')}</p>` : ''}
     <div class="sc-row"><button type="button" class="btn primary" data-sc="sh-import">匯入</button><button type="button" class="btn" data-sc="sh-cancel">取消</button></div></div>`;
 }
 function renderShifts(){
   const el = document.getElementById('sc-shift'), list = shiftsAll(), c = can(), depts = deptNames();
   el.querySelector('.sc-sum').textContent = `班別設定（${list.length ? list.length + ' 種' : '還沒設定'}）`;
   const rows = list.map((x, i) => {
-    const h = SC.hoursOf({k:'w', s:x.s, e:x.e, b:x.b});
-    if (!c) return `<tr><td><b>${esc(x.c)}</b></td><td>${esc(x.n)}</td><td>${SC.tShow(x.s)}</td><td>${SC.tShow(x.e)}</td><td>${fmtH(x.b)}</td><td>${fmtH(h)}</td><td>${esc(x.d || '全部')}</td><td></td></tr>`;
+    const h = x.s && x.e ? fmtH(SC.hoursOf({k:'w', s:x.s, e:x.e, b:x.b})) + ' 小時' : '—';
+    if (!c) return `<tr><td><b>${esc(x.c)}</b></td><td>${esc(x.n)}</td><td>${SC.tShow(x.s) || '—'}</td><td>${SC.tShow(x.e) || '—'}</td><td>${x.s && x.e ? fmtH(x.b) : '—'}</td><td>${h}</td><td>${esc(x.d || '全部')}</td><td></td></tr>`;
     const inp = (f, v, w, extra) => `<input class="inp${w ? ' ' + w : ''}" data-sh="${i}" data-f="${f}" value="${esc(v)}" aria-label="${esc(x.c)} ${{c:'代碼', n:'名稱', s:'上班', e:'下班', b:'休息小時', d:'適用部門'}[f]}"${extra || ''}>`;
-    return `<tr><td>${inp('c', x.c, 'sh-c', ' maxlength="12"')}</td><td>${inp('n', x.n, '', ' maxlength="20"')}</td><td>${inp('s', SC.tShow(x.s), 'sh-t', ' inputmode="decimal"')}</td><td>${inp('e', SC.tShow(x.e), 'sh-t', ' inputmode="decimal"')}</td>
-      <td>${inp('b', fmtH(x.b), 'sh-t', ' inputmode="decimal"')}</td><td class="sh-h">${fmtH(h)} 小時</td><td>${inp('d', x.d, '', ' list="sc-dl2" placeholder="全部"')}</td><td>${confirmBtn('sh-del|' + i, '刪除', '確定刪除？', 'sm')}</td></tr>`;
+    return `<tr><td>${inp('c', x.c, 'sh-c', ' maxlength="12"')}</td><td>${inp('n', x.n, '', ' maxlength="20"')}</td><td>${inp('s', SC.tShow(x.s), 'sh-t', ' inputmode="decimal" placeholder="未設定"')}</td><td>${inp('e', SC.tShow(x.e), 'sh-t', ' inputmode="decimal" placeholder="未設定"')}</td>
+      <td>${inp('b', fmtH(x.b), 'sh-t', ' inputmode="decimal"')}</td><td class="sh-h">${h}</td><td>${inp('d', x.d, '', ' list="sc-dl2" placeholder="全部"')}</td><td>${confirmBtn('sh-del|' + i, '刪除', '確定刪除？', 'sm')}</td></tr>`;
   }).join('');
   document.getElementById('sc-shift-body').innerHTML = `
-    <p class="sc-sub">部門填班表時可以直接點班別，選了就帶入上下班與休息時間，匯出也會帶班別代碼。適用部門空白＝每個部門都能用；只給某些部門用就填部門名稱（多個用逗號分開）。改班別設定不會改到已經排好的日子。</p>
+    <p class="sc-sub">班別代碼要和 Apollo 的「班次代碼」一樣（匯入 Apollo 的上班日一定要有班次代碼）。部門有班別可以選時，排上班一定要選班別；有預設時間的會自動帶入，時間可以再調整。「適用部門」：有指定給某個部門的班別，那個部門就只看到指定給它的；一個都沒指定的部門，看到所有沒填適用部門的班別（多個部門用逗號分開）。建議每個部門都指定常用的幾種，選單會短很多。改班別設定不會改到已經排好的日子。</p>
     ${c ? `<div class="sc-imp">
-      <p class="sc-sub">可以從 Apollo 的班別清單（或自己的 Excel）<b>整張表連標題列一起複製</b>貼到這裡：要有「班別代碼」（或名稱）、「上班」、「下班」，休息、名稱、適用部門可有可無；休息可以是小時、分鐘或 12:00-13:00。代碼一樣的會更新。</p>
-      <textarea class="inp" id="sc-sh-paste" data-keep="1" rows="3" placeholder="班別代碼	班別名稱	上班時間	下班時間	休息&#10;A	早班	07:00	14:30	0.5"></textarea>
+      <p class="sc-sub">可以把 Apollo「班表匯入範本」的「班次代碼」工作表（班次代碼、班次名稱）<b>整張連標題列一起複製</b>貼到這裡；也可以多加「上班、下班、休息、適用部門」欄。休息可以是小時、分鐘或 12:00-13:00。代碼一樣的會更新。</p>
+      <textarea class="inp" id="sc-sh-paste" data-keep="1" rows="3" placeholder="班次代碼	班次名稱&#10;A099	研發7點(休半小)"></textarea>
       <div class="sc-row"><button type="button" class="btn" data-sc="sh-parse">讀取貼上的內容</button><span class="sp"></span><button type="button" class="btn" data-sc="sh-add">新增一種班別</button></div>
       ${shPreview()}</div>` : ''}
     ${list.length ? `<div class="sc-tw"><table class="sc-t sc-staff sc-shifts"><thead><tr><th scope="col">代碼</th><th scope="col">名稱</th><th scope="col">上班</th><th scope="col">下班</th><th scope="col">休息（小時）</th><th scope="col">工時</th><th scope="col">適用部門</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -271,7 +274,7 @@ function editShift(t){
   const i = +t.dataset.sh, f = t.dataset.f, list = shiftsAll(), x = list[i];
   if (!x) return;
   let v = String(t.value).trim();
-  if (f === 's' || f === 'e') { const pt = SC.parseTime(v); if (!pt) { toast('時間看不懂：請打 7、7.5、7:30 或 0730'); t.value = SC.tShow(x[f]); return; } v = pt; }
+  if (f === 's' || f === 'e') { const pt = v ? SC.parseTime(v) : ''; if (pt === null) { toast('時間看不懂：請打 7、7.5、7:30 或 0730'); t.value = SC.tShow(x[f]); return; } v = pt; }
   else if (f === 'b') { const n = Number(v || 0); if (!isFinite(n) || n < 0 || n > 12) { toast('休息請填 0 到 12 之間的小時數'); t.value = fmtH(x.b); return; } v = Math.round(n * 100) / 100; }
   else if (f === 'c') { v = SC.cleanCode(v); if (!v || list.some((y, j) => j !== i && y.c === v)) { toast(v ? `代碼「${v}」已經有了` : '代碼不能空白'); t.value = x.c; return; } }
   x[f] = v;
@@ -390,7 +393,18 @@ function renderSet(){
   const c = can();
   document.getElementById('sc-set-body').innerHTML = `
     <div class="sc-row"><label class="sc-f">四週變形起算日<input class="inp" type="date" id="sc-anchor" value="${esc(anchor())}"${c ? '' : ' disabled'}></label></div>
-    <p class="sc-sub">每 4 週（28 天）一個週期從這天開始算：週期內正常工時不超過 160 小時、例假＋休息日至少 8 天，前後兩週各至少 2 天例假。請設成公司實際採用的變形工時起算日（預設 ${SC.DEFAULT_ANCHOR}）。</p>`;
+    <p class="sc-sub">每 4 週（28 天）一個週期從這天開始算：週期內正常工時不超過 160 小時、例假＋休息日至少 8 天，前後兩週各至少 2 天例假。請設成公司實際採用的變形工時起算日（預設 ${SC.DEFAULT_ANCHOR}）。</p>
+    <h3 class="sc-h3">匯出 Apollo 的狀態代碼</h3>
+    <p class="sc-sub">上班 W0001（要有班次代碼）、休息日 H0002、例假 H0003 固定；下面兩種看公司在 Apollo 怎麼用：</p>
+    <div class="sc-row sc-mrow">
+      <label class="sc-f sc-big" for="sc-ap-H">國定假日</label><select class="inp" id="sc-ap-H"${c ? '' : ' disabled'}>${apOpts(apMap().H, ['H0001', 'M0002'])}</select>
+      <label class="sc-f sc-big" for="sc-ap-L">請假（整天）</label><select class="inp" id="sc-ap-L"${c ? '' : ' disabled'}>${apOpts(apMap().L, ['H0001'])}</select>
+    </div>
+    <p class="sc-sub">選「不匯出」的日子不會出現在匯入檔裡（請假請在 Apollo 另外請假）。</p>`;
+}
+const apMap = () => Object.assign({}, SC.APOLLO_DEF, cfg().apollo || {});
+function apOpts(cur, codes){
+  return [['', '不匯出']].concat(SC.APOLLO_STATUS.filter(([k]) => codes.includes(k))).map(([k, t]) => `<option value="${k}"${cur === k ? ' selected' : ''}>${k ? `${k} ${t}` : t}</option>`).join('');
 }
 
 /* ---------- 動作 ---------- */
@@ -451,7 +465,11 @@ function onAct(act, el){
     case 'sh-cancel': B.shImp = null; render(); break;
     case 'sh-import': {
       const list = shiftsAll(), n0 = list.length;
-      for (const x of B.shImp.rows) { const i = list.findIndex(y => y.c === x.c); if (i >= 0) list[i] = Object.assign({}, list[i], x, {d: x.d || list[i].d}); else list.push(x); }
+      for (const x of B.shImp.rows) {
+        const i = list.findIndex(y => y.c === x.c), o = list[i], t = x.s && x.e;
+        if (i >= 0) list[i] = Object.assign({}, o, {n: x.n || o.n, s: t ? x.s : o.s, e: t ? x.e : o.e, b: t ? x.b : o.b, d: x.d || o.d});   // 貼上的沒有時間就保留原本的
+        else list.push(x);
+      }
       saveCfg({shifts:list}); toast(`班別：新增 ${list.length - n0} 種、更新 ${B.shImp.rows.length - (list.length - n0)} 種`);
       B.shImp = null; const ta = document.getElementById('sc-sh-paste'); if (ta) ta.value = ''; render(); break;
     }
@@ -465,6 +483,8 @@ function onAct(act, el){
       if (B.confirm !== act) { setConfirm(act); return; }
       B.confirm = ''; const list = shiftsAll(); list.splice(+arg, 1); saveCfg({shifts:list}); toast('已刪除班別（已經排好的日子不受影響）'); render(); break;
     }
+    case 'exp-apollo': exportApollo(); break;
+    case 'exp-close': B.expMsg = ''; render(); break;
     case 'exp-detail': exportDetail(); break;
     case 'exp-matrix': exportMatrix(); break;
   }
@@ -480,6 +500,7 @@ function bind(root){
       saveMonthCfg({hol:list});
     }
     else if (t.id === 'sc-anchor') { if (SC.isDate(t.value)) saveCfg({anchor:t.value}); }
+    else if (t.id === 'sc-ap-H' || t.id === 'sc-ap-L') saveCfg({apollo:Object.assign(apMap(), {[t.id.slice(-1)]:t.value})});
     else if (t.dataset.sh != null && t.dataset.f) editShift(t);
     else if (t.id === 'sc-file' && t.files && t.files[0]) {
       const f = t.files[0];
@@ -497,6 +518,66 @@ function bind(root){
 }
 
 /* ---------- 匯出 ---------- */
+let zipLib = null;
+function loadJSZip(){
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (!zipLib) zipLib = new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    sc.onload = () => res(window.JSZip); sc.onerror = () => { zipLib = null; rej(new Error('載入失敗')); };
+    document.head.appendChild(sc);
+  });
+  return zipLib;
+}
+const xesc = v => String(v == null ? '' : v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+const colName = i => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+/** 簡單的 .xlsx：一個工作表；文字一律存成文字（工號、班次代碼前面的 0 不會不見），日期存成 Excel 日期（yyyy/mm/dd） */
+async function xlsxBlob(sheet, rows, widths){
+  const JSZip = await loadJSZip(), z = new JSZip();
+  const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main', rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const serial = d => (Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) - Date.UTC(1899, 11, 30)) / 86400000;
+  const cell = (v, r, c) => {
+    if (v == null || v === '') return '';
+    const ref = colName(c) + (r + 1);
+    if (v && typeof v === 'object' && v.date) return `<c r="${ref}" s="1"><v>${serial(v.date)}</v></c>`;
+    return `<c r="${ref}" s="2" t="inlineStr"><is><t xml:space="preserve">${xesc(v)}</t></is></c>`;
+  };
+  const data = rows.map((row, r) => `<row r="${r + 1}">${row.map((v, c) => cell(v, r, c)).join('')}</row>`).join('');
+  z.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`);
+  z.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+  z.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${ns}" xmlns:r="${rel}"><sheets><sheet name="${xesc(sheet)}" sheetId="1" r:id="rId1"/></sheets></workbook>`);
+  z.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${rel}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${rel}/styles" Target="styles.xml"/></Relationships>`);
+  z.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${ns}"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy/mm/dd"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
+  const cols = (widths || []).map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('');
+  z.file('xl/worksheets/sheet1.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${ns}" xmlns:r="${rel}"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${cols ? `<cols>${cols}</cols>` : ''}<sheetData>${data}</sheetData></worksheet>`);
+  return z.generateAsync({type:'blob', compression:'DEFLATE', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function saveBlob(name, blob){
+  const a = document.createElement('a'), url = URL.createObjectURL(blob);
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function exportApollo(){
+  const m = B.month, list = exportList().map(({s}) => ({no:s.no, name:s.name, days:daysOf(m, s.id)}));
+  const {rows, skip} = SC.apolloRows(m, list, apMap());
+  const notLocked = (B.dept ? [B.dept] : deptNames()).filter(n => staffOfDept(n, m).length && !(statusRec(m, deptRec(n)) || {}).lock);
+  const warn = [];
+  if (skip.noNo.length) warn.push(`沒有工號、沒匯出：${skip.noNo.slice(0, 8).map(esc).join('、')}${skip.noNo.length > 8 ? '…' : ''}（請在「員工名單」補工號）`);
+  if (skip.noCode.length) warn.push(`上班沒有班次代碼、沒匯出 ${skip.noCode.length} 天：${skip.noCode.slice(0, 6).map(esc).join('、')}${skip.noCode.length > 6 ? '…' : ''}`);
+  if (skip.noTime.length) warn.push(`上班沒有上下班時間、沒匯出 ${skip.noTime.length} 天`);
+  if (skip.off) warn.push(`國定假日／請假照設定不匯出 ${skip.off} 天`);
+  if (notLocked.length) warn.push(`還沒鎖定的部門：${notLocked.map(esc).join('、')}（部門之後再改，要重新匯出）`);
+  if (!rows.length) { B.expMsg = `<b>${+m.slice(5)} 月沒有可以匯出的班表。</b>${warn.length ? '<ul>' + warn.map(w => `<li>${w}</li>`).join('') + '</ul>' : ''}`; render(); return; }
+  try {
+    const data = [SC.APOLLO_HEAD].concat(rows.map(r => [r[0], r[1], {date:r[2]}, r[3], r[4] || '', r[5] || '', r[6] || '']));
+    const blob = await xlsxBlob('匯入檔', data, [10, 12, 14, 10, 10, 12, 12, 20, 12]);
+    saveBlob(`Apollo班表匯入_${m}${B.dept ? '_' + B.dept : ''}.xlsx`, blob);
+    B.expMsg = `<b>已匯出 Apollo 匯入檔：${rows.length} 筆（${new Set(rows.map(r => r[0])).size} 人）。</b>${warn.length ? '<ul>' + warn.map(w => `<li>${w}</li>`).join('') + '</ul>' : '全部的班都有匯出。'}`;
+  } catch (err) {
+    B.expMsg = `<b>匯出失敗：${esc(err && err.message || err)}</b>（要連網路載入 Excel 產生程式，請稍後再試）`;
+  }
+  render();
+}
 function csv(rows){ return '﻿' + rows.map(r => r.map(v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(',')).join('\r\n'); }
 function download(name, text){
   const a = document.createElement('a'), url = URL.createObjectURL(new Blob([text], {type:'text/csv;charset=utf-8'}));

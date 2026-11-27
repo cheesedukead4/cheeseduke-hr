@@ -187,3 +187,12 @@ details.sc-card[open] > .sc-sum{margin-bottom:10px}
 .sc-shifts .sh-c{width:6em;font-weight:700}
 .sc-shifts .sh-t{width:5.5em;font-family:var(--mono)}
 .sc-shifts .sh-h{color:var(--ink-3);font-size:12.5px}
+
+/* Apollo 匯出結果、班別必選、班別很多時可捲動 */
+.sc-exp{flex-basis:100%;position:relative;padding:10px 44px 10px 14px;border-radius:10px;background:var(--accent-soft);color:var(--ink);font-size:13.5px}
+.sc-exp ul{margin:6px 0 0;padding-left:20px}
+.sc-exp .btn.icon{position:absolute;top:6px;right:6px}
+.sc-h3{margin:16px 0 4px;font-size:14px;font-weight:700}
+.sg-req{font-weight:400;font-size:12.5px;color:var(--ink-3)}
+.sg-shq{height:40px;margin-bottom:8px;font-family:var(--font);font-size:15px}
+.sg-shifts.many{max-height:232px;overflow:auto;padding:2px;border:1px solid var(--line);border-radius:10px}

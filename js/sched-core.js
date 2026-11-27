@@ -4,8 +4,10 @@
  *   { id: 'YYYY-MM|員工 id', date: 'YYYY-MM', sid: 員工 id, dept: 部門名稱, days: { '01': 一天, … }, updatedAt, updatedBy }
  *   一天 { k: w 上班｜R 例假｜X 休息日｜H 國定假日｜L 請假,
  *          s: 上班 HH:MM, e: 下班 HH:MM（比上班早＝下班在隔天）, b: 休息時數, ot: 加班時數, c: 班別代碼, lv: 補／特休時數, lt: 假別, n: 備註 }
- *   班別：人資在看板「班表」頁設定（depts 的 _cfg.shifts：[{ c: 代碼, n: 名稱, s, e, b, d: 適用部門（空白＝全部） }]），
- *   選班別＝帶入那個班的上下班與休息，並記下代碼 c（之後改班別設定，已經排好的日子不會跟著變）。
+ *   班別＝Apollo 的班次代碼：人資在看板「班表」頁設定（depts 的 _cfg.shifts：[{ c: 代碼, n: 名稱, s, e, b（預設時間，可以空白）, d: 適用部門（空白＝全部） }]）。
+ *   部門有班別可以選時，上班一定要選班別（Apollo 匯入「上班 W0001」要班次代碼）；選了會帶入預設時間，時間可以再調整，代碼 c 不變。
+ * Apollo 匯入檔（apolloRows）：一人一天一列「工號、姓名、日期、狀態代碼、班次代碼、上班、下班」；例假 H0003、休息日 H0002，
+ *   國定假日、請假（整天）照人資在看板設定的對照（預設國定假日 H0001 休假日、請假不匯出）。
  *   時數＝下班－上班－休息（和原本的 Excel 班表一樣）。
  *   雲端後端 Code.gs 的 schDay_ 是同一套欄位規則（部門連結存檔時用），改一邊要改另一邊。
  * 四週變形工時檢查（勞基法第 30 條之 1）：從起算日起每 28 天一個週期
@@ -60,21 +62,57 @@ function cleanShifts(list){
   const seen = new Set();
   return (Array.isArray(list) ? list : []).map(x => {
     if (!x || typeof x !== 'object') return null;
-    const c = cleanCode(x.c), s = parseTime(x.s), e = parseTime(x.e);
-    if (!c || !s || !e || seen.has(c)) return null;
+    const c = cleanCode(x.c), s = parseTime(x.s) || '', e = parseTime(x.e) || '';
+    if (!c || seen.has(c)) return null;
     seen.add(c);
     return {c, n:String(x.n == null ? '' : x.n).replace(/\s+/g, ' ').trim().slice(0, 20), s, e, b:numIn(x.b, 12), d:String(x.d == null ? '' : x.d).replace(/\s+/g, ' ').trim().slice(0, 200)};
-  }).filter(Boolean).slice(0, 60);
+  }).filter(Boolean).slice(0, 300);
 }
 const deptsOf = x => String(x.d || '').split(/[,，、;；\s]+/).filter(Boolean);
-/** 某個部門可以用的班別（適用部門空白＝每個部門都能用） */
-const shiftsFor = (list, dept) => cleanShifts(list).filter(x => !x.d || deptsOf(x).includes(dept));
+/** 某個部門可以用的班別：有指定給這個部門的就只用那些；這個部門一個都沒指定時，用沒有指定部門的班別 */
+function shiftsFor(list, dept){
+  const all = cleanShifts(list), mine = all.filter(x => deptsOf(x).includes(dept));
+  return mine.length ? mine : all.filter(x => !x.d);
+}
 const sameShift = (x, d) => x.s === d.s && x.e === d.e && round2(x.b || 0) === round2(d.b || 0);
-/** 一天（上班）對應的班別代碼：先看指定的代碼，再找上下班、休息都一樣的班別 */
+/** 一天（上班）的班別代碼：指定的代碼在清單裡就用它（時間可以和預設不同）；沒指定才找上下班、休息都一樣的班別 */
 function shiftCode(shifts, d, prefer){
+  const list = shifts || [];
+  if (prefer && list.some(x => x.c === prefer)) return prefer;
   if (!d || !d.s || !d.e) return '';
-  const p = (shifts || []).find(x => x.c === prefer && sameShift(x, d)) || (shifts || []).find(x => sameShift(x, d));
+  const p = list.find(x => x.s && x.e && sameShift(x, d));
   return p ? p.c : '';
+}
+/* ---------- Apollo 班表匯入檔 ---------- */
+const APOLLO_HEAD = ['*工號', '姓名', '*日期(YYYY/MM/DD)', '*狀態代碼', '班次代碼', '上班時間(HH:mm)', '下班時間(HH:mm)', '休息時間(hh:mm~hh:mm；如有多組以","分隔；最多3組)', '全天支援單位代碼',
+  '(1)支援單位代碼', '(1)支援起時-hh:mm', '(1)支援迄時-hh:mm', '(2)支援單位代碼', '(2)支援起時-hh:mm', '(2)支援迄時-hh:mm', '(3)支援單位代碼', '(3)支援起時-hh:mm', '(3)支援迄時-hh:mm'];
+const APOLLO_STATUS = [['W0001', '上班'], ['H0001', '休假日'], ['H0002', '休息日'], ['H0003', '例假日'], ['M0001', '月休'], ['M0002', '月休-國定假日'], ['M0003', '月休-休息日'], ['M0004', '月休-例假日']];
+const APOLLO_DEF = {H:'H0001', L:''};
+/**
+ * list: [{ no: 工號, name, days: { DD: 一天 } }]；map: { H: 國定假日的狀態代碼, L: 整天請假的狀態代碼 }（空白＝不匯出）
+ * 回傳 { rows: [[工號, 姓名, 'YYYY-MM-DD', 狀態代碼, 班次代碼, 上班, 下班]], skip: { noNo: [姓名], noCode: ['姓名 M/D'], noTime: [...], off: 不匯出的天數 } }
+ */
+function apolloRows(month, list, map){
+  const m = Object.assign({}, APOLLO_DEF, map || {}), ok = c => APOLLO_STATUS.some(([k]) => k === c);
+  const rows = [], skip = {noNo:[], noCode:[], noTime:[], off:0};
+  for (const p of list || []) {
+    const no = String(p.no == null ? '' : p.no).trim(), days = p.days || {};
+    if (!no) { if (Object.keys(days).length) skip.noNo.push(p.name); continue; }
+    for (const dd of ddList(month)) {
+      const d = days[dd], date = dateOf(month, dd);
+      if (!d) continue;
+      if (d.k === 'w') {
+        if (!d.c) { skip.noCode.push(`${p.name} ${md(date)}`); continue; }
+        if (!d.s || !d.e) { skip.noTime.push(`${p.name} ${md(date)}`); continue; }
+        rows.push([no, p.name, date, 'W0001', d.c, d.s, d.e]);
+        continue;
+      }
+      const st = d.k === 'R' ? 'H0003' : d.k === 'X' ? 'H0002' : d.k === 'H' ? m.H : d.k === 'L' ? m.L : '';
+      if (!st || !ok(st)) { skip.off++; continue; }
+      rows.push([no, p.name, date, st]);
+    }
+  }
+  return {rows, skip};
 }
 /** 一天的資料整理成標準格式（欄位不對就丟掉）；沒有內容回傳 null */
 function cleanDay(d){
@@ -145,9 +183,11 @@ function checkStaff(o){
   }
   sum.work = round2(sum.work); sum.lv = round2(sum.lv); sum.ot = round2(sum.ot); sum.total = round2(sum.work + sum.lv);
   // 每一天
+  const noCode = [];
   for (const dd of ddList(month)) {
     const date = dateOf(month, dd), d = days[date];
     if (!d || d.k !== 'w') continue;
+    if (o.needCode && !d.c) noCode.push(date);
     if (!d.s || !d.e) { issues.push({sev:'err', text:`${md(date)} 上班沒有填上下班時間`}); mark(date, 'err'); continue; }
     const h = hoursOf(d), span = spanMins(d);
     if (h > LIMITS.day) { issues.push({sev:'err', text:`${md(date)} 正常工時 ${fmtH(h)} 小時，超過每天 ${LIMITS.day} 小時`}); mark(date, 'err'); }
@@ -181,6 +221,7 @@ function checkStaff(o){
       if (hf.r + hf.miss < LIMITS.rest2w) issues.push({sev:'err', text:`${md(s)}–${md(e)} 這 2 週例假 ${hf.r} 天，至少要 ${LIMITS.rest2w} 天`});
     });
   }
+  if (noCode.length) { issues.push({sev:'warn', text:`${noCode.length} 天上班沒有選班別（匯入 Apollo 需要班次代碼）：${noCode.slice(0, 8).map(x => +x.slice(8)).join('、')}${noCode.length > 8 ? '…' : ''} 日`}); noCode.forEach(x => mark(x, 'warn')); }
   if (blanks.length) issues.push({sev:'warn', text:`還有 ${blanks.length} 天沒排：${blanks.slice(0, 8).join('、')}${blanks.length > 8 ? '…' : ''} 日`});
   if (o.target > 0 && !blanks.length) {
     const diff = round2(sum.total - o.target);
@@ -213,12 +254,26 @@ function Grid(root, opt){
     G.checks = {};
     let n = 0;
     for (const st of G.opt.staff) {
-      const r = checkStaff({month:G.opt.month, days:allDays(st.id), anchor:G.opt.anchor, target: usesTarget(st) ? G.opt.target : 0});
+      const r = checkStaff({month:G.opt.month, days:allDays(st.id), anchor:G.opt.anchor, target: usesTarget(st) ? G.opt.target : 0, needCode:(G.opt.shifts || []).length > 0});
       G.checks[st.id] = r;
       n += r.issues.filter(i => i.sev === 'err').length;
     }
     if (G.opt.onIssues) G.opt.onIssues(n);
   }
+  function codeUse(){ const n = new Map(); for (const days of Object.values(G.opt.data)) for (const d of Object.values(days || {})) if (d && d.c) n.set(d.c, (n.get(d.c) || 0) + 1); return n; }
+  function orderShifts(){ const n = codeUse(), list = (G.opt.shifts || []).slice(); return list.map((x, i) => [x, i]).sort((a, b) => (n.get(b[0].c) || 0) - (n.get(a[0].c) || 0) || a[1] - b[1]).map(a => a[0]); }
+  /** 班別的時間：班別有預設時間就用預設，沒有就用這個班別最常排的時間 */
+  function timesFor(c){
+    const x = (G.opt.shifts || []).find(y => y.c === c);
+    if (x && x.s && x.e) return {s:x.s, e:x.e, b:x.b || 0};
+    const cnt = new Map();
+    for (const days of Object.values(G.opt.data)) for (const d of Object.values(days || {})) if (d && d.c === c && d.s && d.e) { const k = `${d.s}-${d.e}-${d.b || 0}`; cnt.set(k, (cnt.get(k) || 0) + 1); }
+    const best = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (!best) return null;
+    const [s, e, b] = best[0].split('-');
+    return {s, e, b:+b || 0};
+  }
+  const shLabel = x => `${esc(x.c)}${x.n ? ' ' + esc(x.n) : ''}${x.s ? '　' + esc(shiftText(x)) : ''}`;
   function commonShifts(){
     const cnt = new Map();
     for (const days of Object.values(G.opt.data)) for (const d of Object.values(days || {})) { const k = shiftKey(d); if (k) cnt.set(k, (cnt.get(k) || 0) + 1); }
@@ -319,7 +374,7 @@ function Grid(root, opt){
       <h3 id="sg-ed-t">${title}</h3>
       <div class="sg-kinds" role="group" aria-label="這天是">${KINDS.map(([k, t]) => `<button type="button" class="sg-k k-${k}" data-k="${k}" aria-pressed="${cur.k === k}">${t}</button>`).join('')}</div>
       <div class="sg-part" data-for="w">
-        ${shifts.length ? `<p class="sg-lbl" id="sg-sh-l">選班別</p><div class="sg-shifts" role="group" aria-labelledby="sg-sh-l">${shifts.map(x => `<button type="button" class="sg-chip sg-sh" data-c="${esc(x.c)}" data-s="${x.s}" data-e="${x.e}" data-b="${x.b || 0}" aria-pressed="false"><b>${esc(x.c)}</b>${x.n ? `<span>${esc(x.n)}</span>` : ''}<small>${esc(shiftText(x))}</small></button>`).join('')}</div><p class="sg-lbl">或自訂上下班時間</p>`
+        ${shifts.length ? `<p class="sg-lbl" id="sg-sh-l">選班別 <span class="sg-req">必選（Apollo 班次代碼）</span></p>${shifts.length > 8 ? '<input class="sg-inp sg-shq" type="search" placeholder="找班別：代碼或名稱" aria-label="找班別" autocomplete="off">' : ''}<div class="sg-shifts${shifts.length > 8 ? ' many' : ''}" role="group" aria-labelledby="sg-sh-l">${orderShifts().map(x => `<button type="button" class="sg-chip sg-sh" data-c="${esc(x.c)}" data-s="${x.s && x.e ? x.s : ''}" data-e="${x.e}" data-b="${x.b || 0}" data-q="${esc((x.c + ' ' + x.n).toLowerCase())}" aria-pressed="false"><b>${esc(x.c)}</b>${x.n ? `<span>${esc(x.n)}</span>` : ''}${x.s && x.e ? `<small>${esc(shiftText(x))}</small>` : ''}</button>`).join('')}</div><p class="sg-lbl">上下班時間（可以調整）</p>`
           : chips.length ? `<div class="sg-chips" aria-label="常用時段">${chips.map(c => `<button type="button" class="sg-chip" data-s="${c.s}" data-e="${c.e}" data-b="${c.b}">${esc(shiftText(c))}</button>`).join('')}</div>` : ''}
         <div class="sg-row3">
           <label>上班<input class="sg-inp" name="s" inputmode="decimal" autocomplete="off" placeholder="7:00" value="${esc(tShow(w.s || ''))}"></label>
@@ -363,9 +418,13 @@ function Grid(root, opt){
     f.querySelectorAll('.sg-part').forEach(p => { p.hidden = p.dataset.for !== G.ed.k; });
     const h = f.querySelector('[data-hours]');
     if (G.ed.k === 'w') {
-      const d = readEditor(true);
-      h.textContent = d && d.s && d.e ? `${d.c ? `班別 ${d.c}・` : (G.opt.shifts || []).length ? '自訂時間・' : ''}工時 ${fmtH(hoursOf(d))} 小時` + (spanMins(d) && mins(d.e) <= mins(d.s) ? '（下班在隔天）' : '') : '上下班可以打 7、7.5、7:30 或 0730';
-      f.querySelectorAll('.sg-sh').forEach(b => b.setAttribute('aria-pressed', String(!!d && d.c === b.dataset.c)));
+      const fv = n => (f.querySelector(`[name="${n}"]`) || {}).value || '';
+      const s = parseTime(fv('s')), e = parseTime(fv('e')), b = Number(fv('b') || 0), shifts = G.opt.shifts || [], sh = shifts.find(x => x.c === G.ed.c), parts = [];
+      if (shifts.length) parts.push(sh ? `班別 ${sh.c}${sh.n ? ' ' + sh.n : ''}` : '還沒選班別');
+      if (s && e && isFinite(b)) { const d = {k:'w', s, e, b}; parts.push(`工時 ${fmtH(hoursOf(d))} 小時${mins(e) <= mins(s) ? '（下班在隔天）' : ''}`); if (sh && sh.s && sh.e && !sameShift(sh, d)) parts.push('時間和班別預設不同'); }
+      else parts.push('上下班可以打 7、7.5、7:30 或 0730');
+      h.textContent = parts.join('・');
+      f.querySelectorAll('.sg-sh').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.c === G.ed.c)));
     }
   }
   function readEditor(quiet){
@@ -380,6 +439,7 @@ function Grid(root, opt){
       if ([b, ot, lv].some(x => isNaN(x))) return err('休息、加班、補／特休請填 0 到 12 之間的小時數（例如 0.5）');
       Object.assign(o, {s, e, b, ot, lv, lt: v('ltw')});
       o.c = shiftCode(G.opt.shifts, o, G.ed.c);
+      if ((G.opt.shifts || []).length && !o.c) return err('請選班別（匯入 Apollo 需要班次代碼）');
       if (hoursOf(o) <= 0) return err('工時算出來是 0：請檢查上下班時間和休息時數');
     } else if (k === 'L') {
       const lv = num('lv', 24);
@@ -401,7 +461,9 @@ function Grid(root, opt){
   /* ----- 整月快速填入 ----- */
   function openQuickFill(sid){
     if (G.opt.readOnly) return;
-    const shifts = G.opt.shifts || [], st = staffOf(sid), base = commonShifts()[0] || G.last || shifts[0] || {s:'07:00', e:'15:30', b:0.5}, baseCode = shiftCode(shifts, base, base.c);
+    const shifts = G.opt.shifts || [], st = staffOf(sid), last = G.last && G.last.c ? G.last : null;
+    const baseCode = last ? last.c : shifts.length ? (orderShifts()[0] || {}).c || '' : '';
+    const base = last || (baseCode && timesFor(baseCode)) || commonShifts()[0] || G.last || {s:'07:00', e:'15:30', b:0.5};
     const hol = (G.opt.hol || []).length;
     G.ed = {qf: sid, cells: []};
     const ov = $('.sg-ov');
@@ -409,7 +471,7 @@ function Grid(root, opt){
     <form class="sg-sheet" role="dialog" aria-modal="true" aria-labelledby="sg-qf-t" novalidate data-qf="1">
       <h3 id="sg-qf-t">整個月快速填入：${esc(st.name)}</h3>
       <p class="sg-hint">先把整個月填好，再點個別日子修改。</p>
-      ${shifts.length ? `<label class="sg-full">班別<select class="sg-inp" name="sh"><option value="">自訂時間（填下面）</option>${shifts.map(x => `<option value="${esc(x.c)}"${baseCode === x.c ? ' selected' : ''}>${esc(x.c)}${x.n ? ' ' + esc(x.n) : ''}　${esc(shiftText(x))}</option>`).join('')}</select></label>` : ''}
+      ${shifts.length ? `<label class="sg-full">班別（必選，Apollo 班次代碼）<select class="sg-inp" name="sh"><option value="">請選班別</option>${orderShifts().map(x => `<option value="${esc(x.c)}"${baseCode === x.c ? ' selected' : ''}>${shLabel(x)}</option>`).join('')}</select></label>` : ''}
       <fieldset class="sg-wds"><legend>上班的日子</legend>${[1,2,3,4,5,6,0].map(w => `<label><input type="checkbox" name="wd" value="${w}"${w >= 1 && w <= 5 ? ' checked' : ''}>週${WD[w]}</label>`).join('')}</fieldset>
       <div class="sg-row3">
         <label>上班<input class="sg-inp" name="s" inputmode="decimal" autocomplete="off" value="${esc(tShow(base.s))}"></label>
@@ -435,6 +497,7 @@ function Grid(root, opt){
     const err = m => { f.querySelector('.sg-err').textContent = m; };
     const s = parseTime(v('s')), e = parseTime(v('e')), b = Number(v('b') || 0);
     const wds = [...f.querySelectorAll('[name="wd"]:checked')].map(x => +x.value), r = +v('r'), x = +v('x');
+    if ((G.opt.shifts || []).length && !v('sh')) return err('請選班別（匯入 Apollo 需要班次代碼）');
     if (!s || !e) return err('請填上班和下班時間（例如 7、7.5、7:30）');
     if (!isFinite(b) || b < 0 || b > 12) return err('休息時數請填 0 到 12 之間的數字');
     if (r === x) return err('例假和休息日要排在不同天');
@@ -472,7 +535,15 @@ function Grid(root, opt){
     const k = e.target.closest('.sg-k');
     if (k) { G.ed.k = k.dataset.k; syncEditor(); return; }
     const chip = e.target.closest('.sg-chip');
-    if (chip) { const f = edForm(); f.querySelector('[name="s"]').value = tShow(chip.dataset.s); f.querySelector('[name="e"]').value = tShow(chip.dataset.e); f.querySelector('[name="b"]').value = fmtH(+chip.dataset.b); G.ed.c = chip.dataset.c || ''; f.querySelector('.sg-err').textContent = ''; syncEditor(); return; }
+    if (chip) {
+      const f = edForm(), c = chip.dataset.c || '', t = chip.dataset.s ? {s:chip.dataset.s, e:chip.dataset.e, b:+chip.dataset.b || 0} : c ? timesFor(c) : null;
+      if (t) { f.querySelector('[name="s"]').value = tShow(t.s); f.querySelector('[name="e"]').value = tShow(t.e); f.querySelector('[name="b"]').value = fmtH(t.b || 0); }
+      if (chip.classList.contains('sg-sh')) G.ed.c = c;
+      f.querySelector('.sg-err').textContent = '';
+      syncEditor();
+      if (!t) { const i = f.querySelector('[name="s"]'); if (i && !i.value) i.focus(); }
+      return;
+    }
     const qf = e.target.closest('[data-qf]');
     if (qf && qf.tagName === 'BUTTON') { openQuickFill(qf.dataset.qf); return; }
     const c = e.target.closest('.sg-c');
@@ -486,11 +557,17 @@ function Grid(root, opt){
   root.addEventListener('change', e => {   // 快速填入選班別 → 帶入上下班時間
     const t = e.target;
     if (t.name !== 'sh' || !t.closest('form[data-qf]')) return;
-    const x = (G.opt.shifts || []).find(y => y.c === t.value), f = t.form;
-    if (!x) return;
-    f.querySelector('[name="s"]').value = tShow(x.s); f.querySelector('[name="e"]').value = tShow(x.e); f.querySelector('[name="b"]').value = fmtH(x.b || 0);
+    const tm = t.value ? timesFor(t.value) : null, f = t.form;
+    if (!tm) return;
+    f.querySelector('[name="s"]').value = tShow(tm.s); f.querySelector('[name="e"]').value = tShow(tm.e); f.querySelector('[name="b"]').value = fmtH(tm.b || 0);
   });
-  root.addEventListener('input', e => { if (e.target.closest('.sg-ov form:not([data-qf])')) { e.target.closest('form').querySelector('.sg-err').textContent = ''; syncEditor(); } });
+  root.addEventListener('input', e => {   // 找班別
+    const t = e.target;
+    if (!t.classList || !t.classList.contains('sg-shq')) return;
+    const q = t.value.trim().toLowerCase();
+    t.form.querySelectorAll('.sg-sh').forEach(b => { b.hidden = !!q && !b.dataset.q.includes(q) && b.dataset.c !== G.ed.c; });
+  });
+  root.addEventListener('input', e => { if (e.target.closest('.sg-ov form:not([data-qf])') && !e.target.classList.contains('sg-shq')) { e.target.closest('form').querySelector('.sg-err').textContent = ''; syncEditor(); } });
   root.addEventListener('focusout', e => {
     const t = e.target;
     if (t.matches && t.matches('.sg-ov [name="s"], .sg-ov [name="e"]')) { const p = parseTime(t.value); if (p) t.value = tShow(p); }
@@ -559,6 +636,6 @@ window.SchedCore = {
   pad, esc, KINDS, KIND_LABEL, LEAVES, WD, DEFAULT_ANCHOR, LIMITS,
   isMonth, isDate, daysIn, dateOf, wday, addDays, diffDays, shiftMonth, md, ddList,
   parseTime, tShow, fmtH, cleanDay, cleanDays, hoursOf, spanMins, shiftText, dayText, checkStaff, usesTarget, Grid,
-  cleanCode, cleanShifts, shiftsFor, shiftCode, sameShift
+  cleanCode, cleanShifts, shiftsFor, shiftCode, sameShift, APOLLO_HEAD, APOLLO_STATUS, APOLLO_DEF, apolloRows
 };
 })();
