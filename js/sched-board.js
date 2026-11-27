@@ -19,7 +19,7 @@ const NO_DEPT = '（未分部門）';
 const now = new Date();
 const B = {
   month: SC.shiftMonth(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`, now.getDate() >= 15 ? 1 : 0),
-  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:'',
+  dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:'', year:0,
   shDept:'', shQ:'', shOnly:false, shAll:false,  // 班別設定：「選部門、勾班別」選的部門、搜尋、只看已勾
   stQ:'', stDept:'', stEmpty:false, stEmptySet:null   // 班別時間：搜尋、部門、只看還沒填時間的（勾的那一刻的清單）
 };
@@ -101,6 +101,7 @@ function render(){
     root.dataset.ready = '1';
     root.innerHTML = `<div class="sc-top" id="sc-top"></div>
       <section class="ov-card sc-card" id="sc-month" aria-label="每月設定"></section>
+      <details class="ov-card sc-card" id="sc-year" open><summary class="sc-sum"></summary><div id="sc-year-body"></div></details>
       <section class="ov-card sc-card" id="sc-depts" aria-label="各部門班表"></section>
       <section class="ov-card sc-card" id="sc-gridsec" aria-label="部門班表" hidden></section>
       <details class="ov-card sc-card" id="sc-shift"><summary class="sc-sum"></summary><div id="sc-shift-body"></div></details>
@@ -110,6 +111,7 @@ function render(){
   }
   keep(document.getElementById('sc-top'), renderTop);
   keep(document.getElementById('sc-month'), renderMonth);
+  keep(document.getElementById('sc-year'), renderYear);
   keep(document.getElementById('sc-depts'), renderDepts);
   renderGrid();
   keep(document.getElementById('sc-shift'), renderShifts);
@@ -138,6 +140,27 @@ function renderMonth(){
       <label class="sc-f sc-big" for="sc-hol">國定假日</label><span class="sc-f"><input class="inp" id="sc-hol" inputmode="numeric" value="${esc(hol.join(', '))}" placeholder="例：25（多天用逗號分開）">日</span>
     </div>` : `<p class="sc-mro">正職應排 <b>${mc.target ? fmtH(mc.target) + ' 小時' : '未填'}</b>　國定假日 <b>${hol.length ? hol.join('、') + ' 日' : '無'}</b></p>`}
     <p class="sc-sub">應排時數用來比對正職員工（身分寫「正職」或空白）這個月「工時＋補／特休」的合計，兼職、工讀不比對。國定假日在部門「快速填入」時會自動排成「國定假日」。每個月各填一次，換月份用上面的 ‹ ›。</p>`;
+}
+/** 每月應排時數總表：一次填好整年的正職應排時數和國定假日（和「X 月設定」是同一份資料） */
+function renderYear(){
+  const el = document.getElementById('sc-year'), c = can(), y = B.year || +B.month.slice(0, 4);
+  const months = Array.from({length:12}, (_, i) => `${y}-${pad(i + 1)}`);
+  const filled = months.filter(m => monthCfg(m).target).length;
+  el.querySelector('.sc-sum').textContent = `每月應排時數總表（${y} 年已填 ${filled}／12 個月）`;
+  const rows = months.map(m => {
+    const mc = monthCfg(m), hol = (mc.hol || []).map(Number), hs = new Set(mc.hol || []);
+    const wd = SC.ddList(m).filter(dd => { const w = SC.wday(SC.dateOf(m, dd)); return w >= 1 && w <= 5 && !hs.has(dd); }).length;
+    const label = `${+m.slice(5)} 月`;
+    return `<tr${m === B.month ? ' class="on"' : ''}><th scope="row"><button type="button" class="link" data-sc="y-go" data-ym="${m}" title="切換到這個月">${label}</button></th>
+      <td>${c ? `<input class="inp sc-yt" id="sc-yt-${m}" data-ym="${m}" data-f="target" type="number" min="0" max="400" step="0.5" inputmode="decimal" value="${mc.target || ''}" placeholder="例：152" aria-label="${label}正職應排時數">` : mc.target ? fmtH(mc.target) : '—'}</td>
+      <td>${c ? `<input class="inp sc-yh" id="sc-yh-${m}" data-ym="${m}" data-f="hol" inputmode="numeric" value="${esc(hol.join(', '))}" placeholder="例：1, 25" aria-label="${label}國定假日">` : hol.length ? hol.join('、') : '—'}</td>
+      <td class="sc-sub">平日 ${wd} 天</td></tr>`;
+  }).join('');
+  document.getElementById('sc-year-body').innerHTML = `
+    <div class="sc-row"><div class="month" role="group" aria-label="總表年份"><button class="btn icon" type="button" data-sc="y-prev" aria-label="上一年">‹</button><span class="m-label">${y} 年</span><button class="btn icon" type="button" data-sc="y-next" aria-label="下一年">›</button></div>
+    <span class="sc-sub">一次填好每個月的正職應排時數和國定假日；填完按 Tab 就存。和上面「X 月設定」是同一份資料。</span></div>
+    <div class="sc-tw"><table class="sc-t sc-year"><thead><tr><th scope="col">月份</th><th scope="col">正職應排時數</th><th scope="col">國定假日（日期）</th><th scope="col">參考</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="foot-note">「參考」是週一到週五扣掉國定假日的天數，只供對照；應排時數照公司的規定填。點月份可以切換到那個月的班表。</p>`;
 }
 function statusChip(name, m){
   const st = statusRec(m, deptRec(name));
@@ -507,15 +530,20 @@ function setStatus(name, patch){
   const d = ensureDept(name), id = `${B.month}|_d|${d.id}`, cur = ST.get('sched', id) || {id, date:B.month, dept:name};
   ST.save('sched', Object.assign({}, cur, patch, {dept:name, updatedAt:Date.now(), updatedBy:me()}));
 }
-function saveMonthCfg(patch){
-  const id = `${B.month}|_m`, cur = ST.get('sched', id) || {id, date:B.month};
+function saveMonthCfg(patch, month){
+  const m = month || B.month, id = `${m}|_m`, cur = ST.get('sched', id) || {id, date:m};
   ST.save('sched', Object.assign({}, cur, patch, {updatedAt:Date.now(), updatedBy:me()}));
 }
+/** 國定假日：日期用逗號分開 → ['01', '25']（超過那個月的日期丟掉） */
+const parseHol = (v, m) => [...new Set(String(v).split(/[,，、\s]+/).map(x => parseInt(x, 10)).filter(n => n >= 1 && n <= SC.daysIn(m)))].sort((a, b) => a - b).map(pad);
+const parseTarget = v => { const n = Number(v); return isFinite(n) && n > 0 && n <= 400 ? Math.round(n * 100) / 100 : 0; };
 function onAct(act, el){
   const name = el.dataset.d || '';
   const [kind, arg] = act.split('|');
   switch (kind) {
     case 'prev': case 'next': B.month = SC.shiftMonth(B.month, kind === 'prev' ? -1 : 1); B.grid = null; B.gridKey = ''; render(); break;
+    case 'y-prev': case 'y-next': B.year = (B.year || +B.month.slice(0, 4)) + (kind === 'y-prev' ? -1 : 1); render(); break;
+    case 'y-go': B.month = el.dataset.ym; B.grid = null; B.gridKey = ''; render(); window.scrollTo({top:0, behavior:'smooth'}); break;
     case 'open': B.dept = B.dept === name ? '' : name; render(); if (B.dept) setTimeout(() => { const s = document.getElementById('sc-gridsec'); if (s) s.scrollIntoView({behavior:'smooth', block:'start'}); }, 30); break;
     case 'close': B.dept = ''; render(); break;
     case 'make': { const d = ensureDept(name); ST.save('depts', Object.assign({}, deptRec(name) || d, {t:newToken(), on:true, at:Date.now(), by:me()})); copyLink(name); render(); break; }
@@ -582,12 +610,10 @@ function bind(root){
   root.addEventListener('click', e => { const b = e.target.closest('[data-sc]'); if (b && root.contains(b) && !b.closest('.sg')) onAct(b.dataset.sc, b); });
   root.addEventListener('change', e => {
     const t = e.target;
-    if (t.id === 'sc-target') { const v = Number(t.value); saveMonthCfg({target: isFinite(v) && v > 0 && v <= 400 ? Math.round(v * 100) / 100 : 0}); }
-    else if (t.id === 'sc-hol') {
-      const max = SC.daysIn(B.month), list = [...new Set(String(t.value).split(/[,，、\s]+/).map(x => parseInt(x, 10)).filter(n => n >= 1 && n <= max))].sort((a, b) => a - b).map(pad);
-      t.value = list.map(Number).join(', ');
-      saveMonthCfg({hol:list});
-    }
+    if (t.id === 'sc-target') saveMonthCfg({target:parseTarget(t.value)});
+    else if (t.id === 'sc-hol') { const list = parseHol(t.value, B.month); t.value = list.map(Number).join(', '); saveMonthCfg({hol:list}); }
+    else if (t.dataset.ym && t.dataset.f === 'target') saveMonthCfg({target:parseTarget(t.value)}, t.dataset.ym);
+    else if (t.dataset.ym && t.dataset.f === 'hol') { const list = parseHol(t.value, t.dataset.ym); t.value = list.map(Number).join(', '); saveMonthCfg({hol:list}, t.dataset.ym); }
     else if (t.id === 'sc-anchor') { if (SC.isDate(t.value)) saveCfg({anchor:t.value}); }
     else if (t.id === 'sc-ap-H' || t.id === 'sc-ap-L') saveCfg({apollo:Object.assign(apMap(), {[t.id.slice(-1)]:t.value})});
     else if (t.dataset.skip) {

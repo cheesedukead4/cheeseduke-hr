@@ -188,6 +188,10 @@ details.sc-card[open] > .sc-sum{margin-bottom:10px}
 .sc-shifts .sh-t{width:5.5em;font-family:var(--mono)}
 .sc-shifts .sh-h{color:var(--ink-3);font-size:12.5px}
 
+/* 每月應排時數總表 */
+.sc-year .sc-yt{width:7em;font-weight:700}
+.sc-year .sc-yh{width:12em}
+.sc-year tr.on{background:var(--accent-soft)}
 /* 選部門、勾班別 */
 .sc-shpick{margin:4px 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .sc-shpick .sc-h3{margin-top:0}
