@@ -201,7 +201,17 @@ details.sc-card[open] > .sc-sum{margin-bottom:10px}
 .sc-shk small{color:var(--ink-3);font-size:11.5px}
 .sc-shk.on{border-color:var(--accent);background:var(--accent-soft)}
 .sc-shk:focus-within{outline:2px solid var(--accent);outline-offset:1px}
-.sc-shall > summary{cursor:pointer;font-weight:700;font-size:14px;margin:6px 0 8px}
+.sc-shk span i{display:block;font-style:normal;font-family:var(--mono);font-size:11.5px;color:var(--accent)}
+/* 班別時間 */
+.sc-sttimes{margin:4px 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.sc-sttimes .sc-h3{margin-top:0}
+#sc-stq{width:min(260px,100%)}
+.sc-sttw{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.sc-sttw thead th{position:sticky;top:0;z-index:1;background:var(--col)}
+.sc-shifts tr.need .sh-t{border-style:dashed}
+.sc-shifts .sh-n{min-width:9em}
+.sc-shifts .sh-d{min-width:7em}
+.sc-impd > summary{cursor:pointer;font-weight:700;font-size:14px;margin:6px 0 8px}
 /* Apollo 匯出結果、班別必選、班別很多時可捲動 */
 .sc-exp{flex-basis:100%;position:relative;padding:10px 44px 10px 14px;border-radius:10px;background:var(--accent-soft);color:var(--ink);font-size:13.5px}
 .sc-exp ul{margin:6px 0 0;padding-left:20px}

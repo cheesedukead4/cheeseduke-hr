@@ -20,7 +20,8 @@ const now = new Date();
 const B = {
   month: SC.shiftMonth(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`, now.getDate() >= 15 ? 1 : 0),
   dept:'', grid:null, gridKey:'', imp:null, shImp:null, q:'', confirm:'', confirmT:0, ctx:{}, expMsg:'',
-  shDept:'', shQ:'', shOnly:false, shAll:false   // 班別設定：「選部門、勾班別」選的部門、搜尋、只看已勾；全部班別明細有沒有打開
+  shDept:'', shQ:'', shOnly:false, shAll:false,  // 班別設定：「選部門、勾班別」選的部門、搜尋、只看已勾
+  stQ:'', stDept:'', stEmpty:false, stEmptySet:null   // 班別時間：搜尋、部門、只看還沒填時間的（勾的那一刻的清單）
 };
 const toast = m => { if (B.ctx.toast) B.ctx.toast(m); };
 const can = () => !!AU && AU.can('sched');
@@ -271,7 +272,7 @@ function shPickHTML(list, depts){
     <div class="sc-row"><button type="button" class="btn sm" data-sc="shk-all"${shown.length ? '' : ' disabled'}>列出的 ${shown.length} 種全部勾選</button><button type="button" class="btn sm" data-sc="shk-none"${shown.some(has) ? '' : ' disabled'}>列出的全部取消</button></div>
     <div class="sc-shk-list">${shown.map(x => {
       const on = has(x), others = deptList(x).filter(d => d !== name);
-      return `<label class="sc-shk${on ? ' on' : ''}"><input type="checkbox" id="sc-shk-${esc(x.c)}" data-shk="${esc(x.c)}"${on ? ' checked' : ''}><b>${esc(x.c)}</b><span>${esc(x.n) || '（沒有名稱）'}</span>${others.length ? `<small>也給：${esc(others.join('、'))}</small>` : ''}</label>`;
+      return `<label class="sc-shk${on ? ' on' : ''}"><input type="checkbox" id="sc-shk-${esc(x.c)}" data-shk="${esc(x.c)}"${on ? ' checked' : ''}><b>${esc(x.c)}</b><span>${esc(x.n) || '（沒有名稱）'}${x.s && x.e ? `<i>${esc(SC.shiftText(x))}</i>` : ''}</span>${others.length ? `<small>也給：${esc(others.join('、'))}</small>` : ''}</label>`;
     }).join('') || '<p class="sc-empty">找不到符合的班別</p>'}</div>
   </div>`;
 }
@@ -291,26 +292,49 @@ function setShiftDept(codes, on){
 }
 function renderShifts(){
   const el = document.getElementById('sc-shift'), list = shiftsAll(), c = can(), depts = deptNames();
-  const box = el.querySelector('.sc-shk-list'), keepTop = box ? box.scrollTop : 0;   // 勾完重畫時清單不要跳回最上面
-  el.querySelector('.sc-sum').textContent = `班別設定（${list.length ? list.length + ' 種' : '還沒設定'}）`;
-  const rows = list.map((x, i) => {
-    const h = x.s && x.e ? fmtH(SC.hoursOf({k:'w', s:x.s, e:x.e, b:x.b})) + ' 小時' : '—';
-    if (!c) return `<tr><td><b>${esc(x.c)}</b></td><td>${esc(x.n)}</td><td>${SC.tShow(x.s) || '—'}</td><td>${SC.tShow(x.e) || '—'}</td><td>${x.s && x.e ? fmtH(x.b) : '—'}</td><td>${h}</td><td>${esc(x.d || '全部')}</td><td></td></tr>`;
-    const inp = (f, v, w, extra) => `<input class="inp${w ? ' ' + w : ''}" data-sh="${i}" data-f="${f}" value="${esc(v)}" aria-label="${esc(x.c)} ${{c:'代碼', n:'名稱', s:'上班', e:'下班', b:'休息小時', d:'適用部門'}[f]}"${extra || ''}>`;
-    return `<tr><td>${inp('c', x.c, 'sh-c', ' maxlength="12"')}</td><td>${inp('n', x.n, '', ' maxlength="20"')}</td><td>${inp('s', SC.tShow(x.s), 'sh-t', ' inputmode="decimal" placeholder="未設定"')}</td><td>${inp('e', SC.tShow(x.e), 'sh-t', ' inputmode="decimal" placeholder="未設定"')}</td>
-      <td>${inp('b', fmtH(x.b), 'sh-t', ' inputmode="decimal"')}</td><td class="sh-h">${h}</td><td>${inp('d', x.d, '', ' list="sc-dl2" placeholder="全部"')}</td><td>${confirmBtn('sh-del|' + i, '刪除', '確定刪除？', 'sm')}</td></tr>`;
-  }).join('');
+  const box = el.querySelector('.sc-shk-list'), keepTop = box ? box.scrollTop : 0;   // 勾完、填完重畫時清單不要跳回最上面
+  const tbox = el.querySelector('.sc-sttw'), keepTop2 = tbox ? tbox.scrollTop : 0;
+  const timed = list.filter(x => x.s && x.e).length;
+  el.querySelector('.sc-sum').textContent = `班別設定（${list.length ? `${list.length} 種，已填時間 ${timed} 種` : '還沒設定'}）`;
   document.getElementById('sc-shift-body').innerHTML = `
-    <p class="sc-sub">班別代碼要和 Apollo 的「班次代碼」一樣（匯入 Apollo 的上班日一定要有班次代碼）。部門有班別可以選時，排上班一定要選班別；有預設時間的會自動帶入，時間可以再調整。「適用部門」：有指定給某個部門的班別，那個部門就只看到指定給它的；一個都沒指定的部門，看到所有沒填適用部門的班別（多個部門用逗號分開）。建議每個部門都指定常用的幾種，選單會短很多。改班別設定不會改到已經排好的日子。</p>
-    ${c ? `<div class="sc-imp">
-      <p class="sc-sub">可以把 Apollo「班表匯入範本」的「班次代碼」工作表（班次代碼、班次名稱）<b>整張連標題列一起複製</b>貼到這裡；也可以多加「上班、下班、休息、適用部門」欄。休息可以是小時、分鐘或 12:00-13:00。代碼一樣的會更新。</p>
-      <textarea class="inp" id="sc-sh-paste" data-keep="1" rows="3" placeholder="班次代碼	班次名稱&#10;A099	研發7點(休半小)"></textarea>
+    <p class="sc-sub">班別代碼要和 Apollo 的「班次代碼」一樣（匯入 Apollo 的上班日一定要有班次代碼）。在「班別時間」填好上班、下班、休息，主管排班時點那個班別就會自動帶入，時間還可以再調整。「選部門、勾班別」指定每個部門能用哪些班別。改班別設定不會改到已經排好的日子。</p>
+    ${c ? `<details class="sc-impd"${B.shImp || B.impOpen ? ' open' : ''}><summary>貼上 Apollo 班次清單（新增或整批更新）</summary><div class="sc-imp">
+      <p class="sc-sub">把 Apollo「班表匯入範本」的「班次代碼」工作表（班次代碼、班次名稱）<b>整張連標題列一起複製</b>貼到這裡；也可以多加「上班、下班、休息、適用部門」欄，一次把時間填好。休息可以是小時、分鐘或 12:00-13:00。代碼一樣的會更新，貼上的沒有時間就保留原本的。</p>
+      <textarea class="inp" id="sc-sh-paste" data-keep="1" rows="3" placeholder="班次代碼	班次名稱	上班	下班	休息&#10;A099	研發7點(休半小)	7:00	14:30	0.5"></textarea>
       <div class="sc-row"><button type="button" class="btn" data-sc="sh-parse">讀取貼上的內容</button><span class="sp"></span><button type="button" class="btn" data-sc="sh-add">新增一種班別</button></div>
-      ${shPreview()}</div>` : ''}
-    ${c && list.length ? shPickHTML(list, depts) : ''}
-    ${list.length ? `<details class="sc-shall"${B.shAll || !c ? ' open' : ''}><summary>全部班別明細（改代碼、名稱、上下班時間、適用部門）</summary><div class="sc-tw"><table class="sc-t sc-staff sc-shifts"><thead><tr><th scope="col">代碼</th><th scope="col">名稱</th><th scope="col">上班</th><th scope="col">下班</th><th scope="col">休息（小時）</th><th scope="col">工時</th><th scope="col">適用部門</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead><tbody>${rows}</tbody></table></div></details>
-      <datalist id="sc-dl2">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist>` : `<p class="sc-empty">${c ? '還沒有班別：貼上 Apollo 的班別清單，或按「新增一種班別」。沒有設定班別時，部門要自己填上下班時間。' : '還沒有設定班別。'}</p>`}`;
+      ${shPreview()}</div></details>` : ''}
+    ${list.length ? shTimesHTML(list, depts, c) : `<p class="sc-empty">${c ? '還沒有班別：貼上 Apollo 的班次清單，或按「新增一種班別」。沒有設定班別時，部門要自己填上下班時間。' : '還沒有設定班別。'}</p>`}
+    ${c && list.length ? shPickHTML(list, depts) : ''}`;
   const nb = el.querySelector('.sc-shk-list'); if (nb && keepTop) nb.scrollTop = keepTop;
+  const nt = el.querySelector('.sc-sttw'); if (nt && keepTop2) nt.scrollTop = keepTop2;
+}
+/** 班別時間（上班、下班、休息）：主管點班別時帶入；欄位有 id，填完按 Tab 存檔重畫後游標還在下一格 */
+function shTimesHTML(list, depts, c){
+  const q = B.stQ.trim().toLowerCase(), timed = list.filter(x => x.s && x.e).length;
+  if (B.stEmpty && !B.stEmptySet) B.stEmptySet = new Set(list.filter(x => !(x.s && x.e)).map(x => x.c));   // 勾「只看還沒填的」那一刻的清單：填好也先不要消失
+  const rows = list.map((x, i) => [x, i]).filter(([x]) => shMatch(x, q) && (!B.stDept || deptList(x).includes(B.stDept)) && (!B.stEmpty || B.stEmptySet.has(x.c)));
+  const L = {c:'代碼', n:'名稱', s:'上班', e:'下班', b:'休息（小時）', d:'適用部門'};
+  const body = rows.map(([x, i]) => {
+    const h = x.s && x.e ? fmtH(SC.hoursOf({k:'w', s:x.s, e:x.e, b:x.b})) + ' 小時' + (SC.spanMins({k:'w', s:x.s, e:x.e}) && x.e <= x.s ? '（隔天下班）' : '') : x.s || x.e ? '還差' + (x.s ? '下班' : '上班') : '—';
+    if (!c) return `<tr><td><b>${esc(x.c)}</b></td><td>${esc(x.n)}</td><td>${SC.tShow(x.s) || '—'}</td><td>${SC.tShow(x.e) || '—'}</td><td>${x.s && x.e ? fmtH(x.b) : '—'}</td><td>${h}</td><td>${esc(x.d || '—')}</td><td></td></tr>`;
+    const inp = (f, v, w, extra) => `<input class="inp${w ? ' ' + w : ''}" id="sc-sh-${f}-${esc(x.c)}" data-sh="${i}" data-f="${f}" value="${esc(v)}" aria-label="${esc(x.c)} ${L[f]}"${extra || ''}>`;
+    return `<tr${x.s && x.e ? '' : ' class="need"'}><td>${inp('c', x.c, 'sh-c', ' maxlength="12"')}</td><td>${inp('n', x.n, 'sh-n', ' maxlength="20"')}</td>
+      <td>${inp('s', SC.tShow(x.s), 'sh-t', ' inputmode="decimal" placeholder="例 7:00" autocomplete="off"')}</td><td>${inp('e', SC.tShow(x.e), 'sh-t', ' inputmode="decimal" placeholder="例 14:30" autocomplete="off"')}</td>
+      <td>${inp('b', x.b || x.s || x.e ? fmtH(x.b) : '', 'sh-t', ' inputmode="decimal" placeholder="例 0.5" autocomplete="off"')}</td><td class="sh-h">${h}</td>
+      <td>${inp('d', x.d, 'sh-d', ' list="sc-dl2" placeholder="（全部）"')}</td><td>${confirmBtn('sh-del|' + i, '刪除', '確定刪除？', 'sm')}</td></tr>`;
+  }).join('');
+  return `<section class="sc-sttimes" aria-labelledby="sc-st-h">
+    <h3 class="sc-h3" id="sc-st-h">班別時間（上班、下班、休息）</h3>
+    <p class="sc-sub" role="status">已填時間 <b>${timed}</b>／${list.length} 種。上下班可以打 7、7.5、7:30 或 0730，休息填小時（例如 0.5）；下班比上班早＝隔天下班。填完按 Tab 或點別的地方就會存，主管點這個班別時會自動帶入。</p>
+    ${c ? `<div class="sc-row">
+      <input class="inp" id="sc-stq" type="search" placeholder="找代碼或名稱，例如：生產、京、A0" aria-label="找班別" value="${esc(B.stQ)}">
+      <select class="inp" id="sc-std" aria-label="只看某個部門的班別"><option value="">全部部門</option>${depts.map(d => `<option${d === B.stDept ? ' selected' : ''}>${esc(d)}</option>`).join('')}</select>
+      <label class="sc-on"><input type="checkbox" id="sc-stempty"${B.stEmpty ? ' checked' : ''}>只看還沒填時間的</label>
+    </div>` : ''}
+    <div class="sc-tw sc-sttw"><table class="sc-t sc-staff sc-shifts"><thead><tr><th scope="col">代碼</th><th scope="col">名稱</th><th scope="col">上班</th><th scope="col">下班</th><th scope="col">休息（小時）</th><th scope="col">工時</th><th scope="col">適用部門</th><th scope="col"><span class="sr-only">刪除</span></th></tr></thead>
+    <tbody>${body || '<tr><td colspan="8">找不到符合的班別</td></tr>'}</tbody></table></div>
+    <datalist id="sc-dl2">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist>
+  </section>`;
 }
 function editShift(t){
   const i = +t.dataset.sh, f = t.dataset.f, list = shiftsAll(), x = list[i];
@@ -554,6 +578,8 @@ function bind(root){
     else if (t.dataset.shk) { setShiftDept([t.dataset.shk], t.checked); }
     else if (t.id === 'sc-shd') { B.shDept = t.value; render(); }
     else if (t.id === 'sc-shonly') { B.shOnly = t.checked; render(); }
+    else if (t.id === 'sc-std') { B.stDept = t.value; render(); }
+    else if (t.id === 'sc-stempty') { B.stEmpty = t.checked; B.stEmptySet = null; render(); }
     else if (t.id === 'sc-file' && t.files && t.files[0]) {
       const f = t.files[0];
       if (/\.xlsx?$/i.test(f.name)) { B.imp = {err:'請在 Excel 裡全選複製貼上，或另存成 CSV 再選'}; render(); return; }
@@ -569,8 +595,9 @@ function bind(root){
   root.addEventListener('input', e => {
     if (e.target.id === 'sc-q') { B.q = e.target.value.trim(); keep(document.getElementById('sc-staff'), renderStaff); }
     else if (e.target.id === 'sc-shq2') { B.shQ = e.target.value; keep(document.getElementById('sc-shift'), renderShifts); }
+    else if (e.target.id === 'sc-stq') { B.stQ = e.target.value; keep(document.getElementById('sc-shift'), renderShifts); }
   });
-  root.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('sc-shall')) B.shAll = e.target.open; }, true);
+  root.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('sc-impd')) B.impOpen = e.target.open; }, true);
 }
 
 /* ---------- 匯出 ---------- */
