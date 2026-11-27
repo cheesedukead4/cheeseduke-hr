@@ -42,6 +42,8 @@ html.sg-lock{overflow:hidden}
 .sg-c.k-X{background:var(--col);color:var(--ink-2)}
 .sg-c.k-H{background:var(--sg-hol);color:var(--ink)}
 .sg-c.k-L{background:var(--sg-leave);color:var(--ink)}
+.sg-c .sg-code{font-family:var(--font);font-size:13px;font-weight:700;max-width:calc(var(--sg-cell) - 6px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sg-c.sel .sg-code,.sg-c.drag .sg-code{color:var(--accent-ink)}
 .sg-dot{position:absolute;top:4px;right:4px;width:6px;height:6px;border-radius:50%;background:var(--cd-gold-deep)}
 .sg-c.m-err{box-shadow:inset 0 0 0 2px var(--danger)}
 .sg-c.m-warn{box-shadow:inset 0 0 0 2px var(--warn)}
@@ -86,6 +88,15 @@ html.sg-lock{overflow:hidden}
 .sg-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .sg-chip{min-height:34px;padding:0 10px;border-radius:8px;border:1px dashed var(--control);background:var(--surface);color:var(--ink);font-family:var(--mono);font-size:13px;cursor:pointer}
 .sg-chip:hover{background:var(--col)}
+.sg-lbl{margin:12px 0 6px;font-size:13.5px;font-weight:500}
+.sg-part > .sg-lbl:first-child{margin-top:0}
+.sg-shifts{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:6px;margin-bottom:4px}
+.sg-sh{display:flex;flex-direction:column;align-items:flex-start;gap:1px;height:auto;min-height:48px;padding:6px 10px;border-style:solid;text-align:left;font-family:var(--font)}
+.sg-sh b{font-size:15px;line-height:1.2}
+.sg-sh span{font-size:12.5px;color:var(--ink-2)}
+.sg-sh small{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.sg-sh[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.sg-sh[aria-pressed="true"] span,.sg-sh[aria-pressed="true"] small{color:var(--accent-ink)}
 .sg-row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:8px}
 .sg-sheet label{display:flex;flex-direction:column;gap:4px;font-size:13.5px;font-weight:500;min-width:0}
 .sg-full{margin-top:14px}
@@ -166,3 +177,13 @@ details.sc-card[open] > .sc-sum{margin-bottom:10px}
 .sc-prev p{margin:0 0 6px}
 #sc-q{width:min(320px,100%)}
 #sc-gridsec .ov-h .chip{flex:none}
+
+/* 每月設定、班別設定 */
+.sc-mrow{display:grid;grid-template-columns:auto auto;justify-content:start;align-items:center;gap:8px 12px}
+.sc-big{font-size:14px;font-weight:700;color:var(--ink)}
+#sc-target{width:7em;font-size:16px;font-weight:700}
+.sc-mro{margin:0;font-size:14px}
+.sc-shifts .inp{min-width:4.5em}
+.sc-shifts .sh-c{width:6em;font-weight:700}
+.sc-shifts .sh-t{width:5.5em;font-family:var(--mono)}
+.sc-shifts .sh-h{color:var(--ink-3);font-size:12.5px}

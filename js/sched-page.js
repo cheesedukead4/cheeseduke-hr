@@ -64,7 +64,7 @@ function render(){
     <div id="sp-grid"></div>
     ${o.lock ? '' : `<div class="sp-save" id="sp-save"></div>`}`;
   st.grid = SC.Grid($('#sp-grid'), {
-    month:o.month, staff:o.staff, data:clone(o.data), ctx:o.ctx, anchor:o.anchor, target:o.target, hol:o.hol, readOnly:o.lock,
+    month:o.month, staff:o.staff, data:clone(o.data), ctx:o.ctx, anchor:o.anchor, target:o.target, hol:o.hol, readOnly:o.lock, shifts:o.shifts || [],
     onChange: changes => { for (const c of changes) { const s = st.dirty.get(c.sid) || {}; s[c.dd] = c.v; st.dirty.set(c.sid, s); } st.msg = ''; renderSave(); },
     onIssues: n => { st.errs = n; },
     onToast: toast
@@ -97,7 +97,7 @@ async function save(send){
     st.busy = '';
     const [cls, label] = statusOf(st.info), s = $('#sp-st');
     if (s) { s.className = 'sp-st ' + cls; s.textContent = label; }
-    st.grid.set({data:clone(st.info.data), ctx:st.info.ctx, target:st.info.target, hol:st.info.hol});
+    st.grid.set({data:clone(st.info.data), ctx:st.info.ctx, target:st.info.target, hol:st.info.hol, shifts:st.info.shifts || []});
   } catch (e) {
     st.busy = '';
     if (e.code === 'locked' && e.info) { st.info = e.info; st.dirty.clear(); render(); toast(e.message); return; }

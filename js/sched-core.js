@@ -3,7 +3,9 @@
  * 資料（HRStore 類別 sched_YYYYMM，一位員工一個月一筆）：
  *   { id: 'YYYY-MM|員工 id', date: 'YYYY-MM', sid: 員工 id, dept: 部門名稱, days: { '01': 一天, … }, updatedAt, updatedBy }
  *   一天 { k: w 上班｜R 例假｜X 休息日｜H 國定假日｜L 請假,
- *          s: 上班 HH:MM, e: 下班 HH:MM（比上班早＝下班在隔天）, b: 休息時數, ot: 加班時數, lv: 補／特休時數, lt: 假別, n: 備註 }
+ *          s: 上班 HH:MM, e: 下班 HH:MM（比上班早＝下班在隔天）, b: 休息時數, ot: 加班時數, c: 班別代碼, lv: 補／特休時數, lt: 假別, n: 備註 }
+ *   班別：人資在看板「班表」頁設定（depts 的 _cfg.shifts：[{ c: 代碼, n: 名稱, s, e, b, d: 適用部門（空白＝全部） }]），
+ *   選班別＝帶入那個班的上下班與休息，並記下代碼 c（之後改班別設定，已經排好的日子不會跟著變）。
  *   時數＝下班－上班－休息（和原本的 Excel 班表一樣）。
  *   雲端後端 Code.gs 的 schDay_ 是同一套欄位規則（部門連結存檔時用），改一邊要改另一邊。
  * 四週變形工時檢查（勞基法第 30 條之 1）：從起算日起每 28 天一個週期
@@ -52,6 +54,28 @@ const tShow = t => t ? String(+t.slice(0, 2)) + ':' + t.slice(3, 5) : '';
 const round2 = x => Math.round(x * 100) / 100;
 function numIn(v, max){ const x = Number(v); return isFinite(x) && x > 0 && x <= max ? round2(x) : 0; }
 const fmtH = x => { x = round2(x || 0); return Number.isInteger(x) ? String(x) : String(x); };
+const cleanCode = v => String(v == null ? '' : v).replace(/[\s<>"'`&]/g, '').slice(0, 12);
+/** 班別設定整理成標準格式：代碼、上下班看得懂才留 */
+function cleanShifts(list){
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map(x => {
+    if (!x || typeof x !== 'object') return null;
+    const c = cleanCode(x.c), s = parseTime(x.s), e = parseTime(x.e);
+    if (!c || !s || !e || seen.has(c)) return null;
+    seen.add(c);
+    return {c, n:String(x.n == null ? '' : x.n).replace(/\s+/g, ' ').trim().slice(0, 20), s, e, b:numIn(x.b, 12), d:String(x.d == null ? '' : x.d).replace(/\s+/g, ' ').trim().slice(0, 200)};
+  }).filter(Boolean).slice(0, 60);
+}
+const deptsOf = x => String(x.d || '').split(/[,，、;；\s]+/).filter(Boolean);
+/** 某個部門可以用的班別（適用部門空白＝每個部門都能用） */
+const shiftsFor = (list, dept) => cleanShifts(list).filter(x => !x.d || deptsOf(x).includes(dept));
+const sameShift = (x, d) => x.s === d.s && x.e === d.e && round2(x.b || 0) === round2(d.b || 0);
+/** 一天（上班）對應的班別代碼：先看指定的代碼，再找上下班、休息都一樣的班別 */
+function shiftCode(shifts, d, prefer){
+  if (!d || !d.s || !d.e) return '';
+  const p = (shifts || []).find(x => x.c === prefer && sameShift(x, d)) || (shifts || []).find(x => sameShift(x, d));
+  return p ? p.c : '';
+}
 /** 一天的資料整理成標準格式（欄位不對就丟掉）；沒有內容回傳 null */
 function cleanDay(d){
   if (!d || typeof d !== 'object') return null;
@@ -63,6 +87,7 @@ function cleanDay(d){
     if (s) o.s = s; if (e) o.e = e;
     const b = numIn(d.b, 12); if (b) o.b = b;
     const ot = numIn(d.ot, 12); if (ot) o.ot = ot;
+    const c = cleanCode(d.c); if (c) o.c = c;
   }
   if (k === 'w' || k === 'L') {
     const lv = numIn(d.lv, 24); if (lv) o.lv = lv;
@@ -92,7 +117,7 @@ function shiftText(d){ return d && d.s && d.e ? `${tShow(d.s)}–${tShow(d.e)}${
 function dayText(d){
   if (!d) return '未排';
   if (d.k === 'w') {
-    const p = [d.s && d.e ? `上班 ${tShow(d.s)} 到 ${tShow(d.e)}，休息 ${fmtH(d.b || 0)} 小時，工時 ${fmtH(hoursOf(d))} 小時` : '上班（時間未填）'];
+    const p = [d.s && d.e ? `${d.c ? `班別 ${d.c}，` : ''}上班 ${tShow(d.s)} 到 ${tShow(d.e)}，休息 ${fmtH(d.b || 0)} 小時，工時 ${fmtH(hoursOf(d))} 小時` : '上班（時間未填）'];
     if (d.ot) p.push(`加班 ${fmtH(d.ot)} 小時`);
     if (d.lv) p.push(`${d.lt || '補／特休'} ${fmtH(d.lv)} 小時`);
     if (d.n) p.push(d.n);
@@ -171,7 +196,7 @@ const usesTarget = st => !st || !st.kind || /正職|全職/.test(st.kind);
  *        anchor, target, hol: ['25'], readOnly, onChange(changes: [{sid, dd, v: 一天|null}]), onIssues(總數) }
  */
 function Grid(root, opt){
-  const G = {opt: Object.assign({data:{}, ctx:{}, staff:[], hol:[]}, opt), sel:new Set(), multi:false, undo:[], last:null, checks:{}, drag:null, ed:null};
+  const G = {opt: Object.assign({data:{}, ctx:{}, staff:[], hol:[], shifts:[]}, opt), sel:new Set(), multi:false, undo:[], last:null, checks:{}, drag:null, ed:null};
   root.classList.add('sg');
   root.innerHTML = '<div class="sg-bar"></div><div class="sg-scroll" tabindex="-1"></div><div class="sg-selbar" hidden></div><div class="sg-issues"></div><div class="sg-ov" hidden></div>';
   const $ = s => root.querySelector(s);
@@ -207,7 +232,7 @@ function Grid(root, opt){
     const date = dateOf(G.opt.month, dd), we = wday(date);
     let inner = '', cls = 'sg-c';
     if (!d) { cls += ' k-none'; }
-    else if (d.k === 'w') { cls += ' k-w'; inner = d.s && d.e ? `<span>${tShow(d.s)}</span><span>${tShow(d.e)}</span>` : '<span>上班</span><span>?</span>'; }
+    else if (d.k === 'w') { cls += ' k-w'; inner = !(d.s && d.e) ? '<span>上班</span><span>?</span>' : d.c ? `<b class="sg-code">${esc(d.c)}</b><span>${tShow(d.s)}</span>` : `<span>${tShow(d.s)}</span><span>${tShow(d.e)}</span>`; }
     else { cls += ' k-' + d.k; inner = `<b>${d.k === 'L' && d.lt ? esc(d.lt.slice(0, 1)) : SHORT[d.k]}</b>`; }
     if (d && (d.ot || d.lv || d.n)) inner += '<i class="sg-dot" aria-hidden="true"></i>';
     if (m) cls += ' m-' + m;
@@ -286,15 +311,16 @@ function Grid(root, opt){
     const cur = (one && getDay(one.sid, one.dd)) || (cells.map(c => getDay(c.sid, c.dd)).find(Boolean)) || G.last || {k:'w', b:0.5};
     const date = one && dateOf(G.opt.month, one.dd);
     const title = one ? `${esc(st ? st.name : '')} ${md(date)}（${WD[wday(date)]}）` : `設定選取的 ${cells.length} 格`;
-    const chips = commonShifts(), w = cur.k === 'w' ? cur : (G.last || chips[0] || {});   // 不是上班的日子改成上班時，先帶最近用的班
-    G.ed = {cells, k: cur.k};
+    const chips = commonShifts(), shifts = G.opt.shifts || [], w = cur.k === 'w' ? cur : (G.last || chips[0] || shifts[0] || {});   // 不是上班的日子改成上班時，先帶最近用的班
+    G.ed = {cells, k: cur.k, c: cur.k === 'w' ? cur.c || '' : w.c || ''};
     const ov = $('.sg-ov');
     ov.innerHTML = `<div class="sg-scrim" data-g="close"></div>
     <form class="sg-sheet" role="dialog" aria-modal="true" aria-labelledby="sg-ed-t" novalidate>
       <h3 id="sg-ed-t">${title}</h3>
       <div class="sg-kinds" role="group" aria-label="這天是">${KINDS.map(([k, t]) => `<button type="button" class="sg-k k-${k}" data-k="${k}" aria-pressed="${cur.k === k}">${t}</button>`).join('')}</div>
       <div class="sg-part" data-for="w">
-        ${chips.length ? `<div class="sg-chips" aria-label="常用時段">${chips.map(c => `<button type="button" class="sg-chip" data-s="${c.s}" data-e="${c.e}" data-b="${c.b}">${esc(shiftText(c))}</button>`).join('')}</div>` : ''}
+        ${shifts.length ? `<p class="sg-lbl" id="sg-sh-l">選班別</p><div class="sg-shifts" role="group" aria-labelledby="sg-sh-l">${shifts.map(x => `<button type="button" class="sg-chip sg-sh" data-c="${esc(x.c)}" data-s="${x.s}" data-e="${x.e}" data-b="${x.b || 0}" aria-pressed="false"><b>${esc(x.c)}</b>${x.n ? `<span>${esc(x.n)}</span>` : ''}<small>${esc(shiftText(x))}</small></button>`).join('')}</div><p class="sg-lbl">或自訂上下班時間</p>`
+          : chips.length ? `<div class="sg-chips" aria-label="常用時段">${chips.map(c => `<button type="button" class="sg-chip" data-s="${c.s}" data-e="${c.e}" data-b="${c.b}">${esc(shiftText(c))}</button>`).join('')}</div>` : ''}
         <div class="sg-row3">
           <label>上班<input class="sg-inp" name="s" inputmode="decimal" autocomplete="off" placeholder="7:00" value="${esc(tShow(w.s || ''))}"></label>
           <label>下班<input class="sg-inp" name="e" inputmode="decimal" autocomplete="off" placeholder="14:30" value="${esc(tShow(w.e || ''))}"></label>
@@ -338,7 +364,8 @@ function Grid(root, opt){
     const h = f.querySelector('[data-hours]');
     if (G.ed.k === 'w') {
       const d = readEditor(true);
-      h.textContent = d && d.s && d.e ? `工時 ${fmtH(hoursOf(d))} 小時` + (spanMins(d) && mins(d.e) <= mins(d.s) ? '（下班在隔天）' : '') : '上下班可以打 7、7.5、7:30 或 0730';
+      h.textContent = d && d.s && d.e ? `${d.c ? `班別 ${d.c}・` : (G.opt.shifts || []).length ? '自訂時間・' : ''}工時 ${fmtH(hoursOf(d))} 小時` + (spanMins(d) && mins(d.e) <= mins(d.s) ? '（下班在隔天）' : '') : '上下班可以打 7、7.5、7:30 或 0730';
+      f.querySelectorAll('.sg-sh').forEach(b => b.setAttribute('aria-pressed', String(!!d && d.c === b.dataset.c)));
     }
   }
   function readEditor(quiet){
@@ -352,6 +379,7 @@ function Grid(root, opt){
       const b = num('b', 12), ot = num('ot', 12), lv = num('lvw', 24);
       if ([b, ot, lv].some(x => isNaN(x))) return err('休息、加班、補／特休請填 0 到 12 之間的小時數（例如 0.5）');
       Object.assign(o, {s, e, b, ot, lv, lt: v('ltw')});
+      o.c = shiftCode(G.opt.shifts, o, G.ed.c);
       if (hoursOf(o) <= 0) return err('工時算出來是 0：請檢查上下班時間和休息時數');
     } else if (k === 'L') {
       const lv = num('lv', 24);
@@ -373,7 +401,7 @@ function Grid(root, opt){
   /* ----- 整月快速填入 ----- */
   function openQuickFill(sid){
     if (G.opt.readOnly) return;
-    const st = staffOf(sid), base = commonShifts()[0] || G.last || {s:'07:00', e:'15:30', b:0.5};
+    const shifts = G.opt.shifts || [], st = staffOf(sid), base = commonShifts()[0] || G.last || shifts[0] || {s:'07:00', e:'15:30', b:0.5}, baseCode = shiftCode(shifts, base, base.c);
     const hol = (G.opt.hol || []).length;
     G.ed = {qf: sid, cells: []};
     const ov = $('.sg-ov');
@@ -381,6 +409,7 @@ function Grid(root, opt){
     <form class="sg-sheet" role="dialog" aria-modal="true" aria-labelledby="sg-qf-t" novalidate data-qf="1">
       <h3 id="sg-qf-t">整個月快速填入：${esc(st.name)}</h3>
       <p class="sg-hint">先把整個月填好，再點個別日子修改。</p>
+      ${shifts.length ? `<label class="sg-full">班別<select class="sg-inp" name="sh"><option value="">自訂時間（填下面）</option>${shifts.map(x => `<option value="${esc(x.c)}"${baseCode === x.c ? ' selected' : ''}>${esc(x.c)}${x.n ? ' ' + esc(x.n) : ''}　${esc(shiftText(x))}</option>`).join('')}</select></label>` : ''}
       <fieldset class="sg-wds"><legend>上班的日子</legend>${[1,2,3,4,5,6,0].map(w => `<label><input type="checkbox" name="wd" value="${w}"${w >= 1 && w <= 5 ? ' checked' : ''}>週${WD[w]}</label>`).join('')}</fieldset>
       <div class="sg-row3">
         <label>上班<input class="sg-inp" name="s" inputmode="decimal" autocomplete="off" value="${esc(tShow(base.s))}"></label>
@@ -410,7 +439,7 @@ function Grid(root, opt){
     if (!isFinite(b) || b < 0 || b > 12) return err('休息時數請填 0 到 12 之間的數字');
     if (r === x) return err('例假和休息日要排在不同天');
     if (wds.includes(r) || wds.includes(x)) return err('例假、休息日那天不能同時勾成上班日');
-    const shift = cleanDay({k:'w', s, e, b});
+    const shift = cleanDay({k:'w', s, e, b, c: shiftCode(G.opt.shifts, {s, e, b}, v('sh'))});
     if (!hoursOf(shift)) return err('工時算出來是 0：請檢查上下班時間和休息時數');
     G.last = shift;
     const hol = on('hol') ? new Set(G.opt.hol || []) : new Set(), onlyBlank = on('blank');
@@ -443,7 +472,7 @@ function Grid(root, opt){
     const k = e.target.closest('.sg-k');
     if (k) { G.ed.k = k.dataset.k; syncEditor(); return; }
     const chip = e.target.closest('.sg-chip');
-    if (chip) { const f = edForm(); f.querySelector('[name="s"]').value = tShow(chip.dataset.s); f.querySelector('[name="e"]').value = tShow(chip.dataset.e); f.querySelector('[name="b"]').value = fmtH(+chip.dataset.b); syncEditor(); return; }
+    if (chip) { const f = edForm(); f.querySelector('[name="s"]').value = tShow(chip.dataset.s); f.querySelector('[name="e"]').value = tShow(chip.dataset.e); f.querySelector('[name="b"]').value = fmtH(+chip.dataset.b); G.ed.c = chip.dataset.c || ''; f.querySelector('.sg-err').textContent = ''; syncEditor(); return; }
     const qf = e.target.closest('[data-qf]');
     if (qf && qf.tagName === 'BUTTON') { openQuickFill(qf.dataset.qf); return; }
     const c = e.target.closest('.sg-c');
@@ -453,6 +482,13 @@ function Grid(root, opt){
       if (G.multi) { if (G.sel.has(key)) G.sel.delete(key); else G.sel.add(key); c.classList.toggle('sel'); c.setAttribute('aria-pressed', String(G.sel.has(key))); renderSelBar(); }
       else openEditor([{sid:c.dataset.sid, dd:c.dataset.dd}]);
     }
+  });
+  root.addEventListener('change', e => {   // 快速填入選班別 → 帶入上下班時間
+    const t = e.target;
+    if (t.name !== 'sh' || !t.closest('form[data-qf]')) return;
+    const x = (G.opt.shifts || []).find(y => y.c === t.value), f = t.form;
+    if (!x) return;
+    f.querySelector('[name="s"]').value = tShow(x.s); f.querySelector('[name="e"]').value = tShow(x.e); f.querySelector('[name="b"]').value = fmtH(x.b || 0);
   });
   root.addEventListener('input', e => { if (e.target.closest('.sg-ov form:not([data-qf])')) { e.target.closest('form').querySelector('.sg-err').textContent = ''; syncEditor(); } });
   root.addEventListener('focusout', e => {
@@ -522,6 +558,7 @@ function Grid(root, opt){
 window.SchedCore = {
   pad, esc, KINDS, KIND_LABEL, LEAVES, WD, DEFAULT_ANCHOR, LIMITS,
   isMonth, isDate, daysIn, dateOf, wday, addDays, diffDays, shiftMonth, md, ddList,
-  parseTime, tShow, fmtH, cleanDay, cleanDays, hoursOf, spanMins, shiftText, dayText, checkStaff, usesTarget, Grid
+  parseTime, tShow, fmtH, cleanDay, cleanDays, hoursOf, spanMins, shiftText, dayText, checkStaff, usesTarget, Grid,
+  cleanCode, cleanShifts, shiftsFor, shiftCode, sameShift
 };
 })();
