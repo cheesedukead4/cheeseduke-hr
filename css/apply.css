@@ -53,7 +53,7 @@ h1,h2,h3{text-wrap:balance;margin:0}
 .ap-f.full{grid-column:1/-1}
 .ap-f > label,.ap-f > .lbl{font-size:14px;font-weight:500}
 .req{color:var(--danger);margin-left:2px}
-.ap-f input[type=text],.ap-f input[type=tel],.ap-f input[type=email],.ap-f input[type=date],.ap-f textarea{width:100%;min-width:0;border:1px solid var(--control);border-radius:10px;background:var(--surface);padding:10px 12px;font-size:16px}
+.ap-f select,.ap-f input[type=text],.ap-f input[type=tel],.ap-f input[type=email],.ap-f input[type=date],.ap-f textarea{width:100%;min-width:0;border:1px solid var(--control);border-radius:10px;background:var(--surface);padding:10px 12px;font-size:16px}
 .ap-f input[type=date]{font-family:var(--mono);font-size:15px;min-height:46px}
 .ap-f textarea{resize:vertical;min-height:72px}
 .ap-hint{font-size:12.5px;color:var(--ink-3)}
@@ -120,3 +120,16 @@ h1,h2,h3{text-wrap:balance;margin:0}
 .ob-b2:disabled{opacity:.5;cursor:not-allowed}
 .ob-msg{margin:14px 0 0;padding:10px 14px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:700}
 .ob-exp{font-size:13.5px}
+/* 報到頁：Apollo 入職資料 */
+.ap-f select{min-height:46px}
+.ob-h3{font-family:var(--head);font-size:16px;color:var(--accent);margin:22px 0 0}
+.ob-apst{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:var(--col);font-size:14.5px}
+.ob-apst.ok{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.ob-grp{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:12px}
+.ob-grp-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ob-grp .ap-fields{margin-top:10px}
+.ob-b2.ob-add,.ob-b2.ob-same{margin-top:10px;font-size:14.5px;padding:7px 14px;align-self:flex-start}
+.ob-b2.ob-del{font-size:13.5px;padding:5px 12px}
+.ob-more{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+.ob-more summary{font-family:var(--head);font-size:16px;color:var(--accent);cursor:pointer}
+.ob-save{margin-top:20px;display:flex}

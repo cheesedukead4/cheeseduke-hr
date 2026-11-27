@@ -191,6 +191,8 @@ function norm(id, d){
     ivr: d.ivr && typeof d.ivr === 'object' ? {queued:!!d.ivr.queued, date:str(d.ivr.date).slice(0, 10), ans:['yes', 'no', 'change'].includes(d.ivr.ans) ? d.ivr.ans : '', ansAt:Number(d.ivr.ansAt) || 0, from:str(d.ivr.from).slice(0, 20)} : null,
     ofc: d.ofc && /^[a-f0-9]{32}$/.test(d.ofc.t || '') ? {t:d.ofc.t, ans:['yes', 'change'].includes(d.ofc.ans) ? d.ofc.ans : '', note:str(d.ofc.note).slice(0, 200), want: isDate(d.ofc.want) ? d.ofc.want : '', ansAt:Number(d.ofc.ansAt) || 0} : null,
     withdrawn: !!d.withdrawn,
+    ap: d.ap && typeof d.ap === 'object' ? d.ap : null, apHr: d.apHr && typeof d.apHr === 'object' ? d.apHr : null,   // Apollo 入職資料（新人填／人資填）
+    apExp: d.apExp && typeof d.apExp === 'object' ? {at:Number(d.apExp.at) || 0, by:str(d.apExp.by).slice(0, 40), n:Number(d.apExp.n) || 0} : null,
     ofr: d.ofr && /^[a-f0-9]{32}$/.test(d.ofr.t || '') ? {t:d.ofr.t, exp:Number(d.ofr.exp) || 0, job:str(d.ofr.job).slice(0, 80), ans: d.ofr.ans === 'yes' || d.ofr.ans === 'no' ? d.ofr.ans : '', ansAt:Number(d.ofr.ansAt) || 0} : null,
     link104: d.link104 && typeof d.link104 === 'object' ? {inv:str(d.link104.inv).slice(0, 40), cv:httpsUrl(d.link104.cv), ref:str(d.link104.ref).slice(0, 400), job:str(d.link104.job).slice(0, 80), name:str(d.link104.name).slice(0, 40)} : null
   };
@@ -519,6 +521,113 @@ function onbHTML(h){
     <p class="muted">${esc(status)}</p>
     ${canEdit() && !ch ? '<p class="note">找不到這位的 104 履歷或聊聊對話：請按「複製報到訊息」，用 LINE 或簡訊傳給新人。</p>' : ''}
     ${btns.length ? `<div class="fl-row">${btns.join('')}</div>` : ''}</section>`;
+}
+/* ---------- Apollo 入職資料：新人在報到連結填（hires.ap，雲端後端存）；人資在這裡補職位資料（hires.apHr）、匯出 Hire 批次匯入檔＋證件照片 ---------- */
+const HL = window.HIRE_LISTS || {};
+const AP_STAGES = ['offer', 'docs', 'apollo_up', 'apollo_down', 'insurance', 'done'];
+const AP_REQ = {idType:'身分證件類型', idNo:'身分證件號碼', last:'姓', first:'名', gender:'性別', birth:'生日', nat:'國籍', mobile:'手機', addrReg:'戶籍地址', addrMail:'聯絡地址'};
+const AP_EDU_REQ = {cat:'學歷類別', top:'是否最高學歷', school:'學校名稱', majorCat:'科系類別', major:'科系名稱', status:'就學狀態', from:'就學期間（起）', to:'就學期間（迄）'};
+const AP_JOB_REQ = {co:'公司名稱', ind:'產業別', type:'職務類別', title:'職稱', from:'任職期間（起）', to:'任職期間（迄）'};
+const AP_HR_REQ = {title:'職稱', empType:'身分類別', dept:'所屬單位（部門代碼）', boss:'直屬主管（工號）', region:'地區'};
+/* 部門代碼（來自人員組成表 2026-10-28）：所屬單位要填代碼 */
+const AP_DEPTS = [['A01', '管理部'], ['A03', '物管組'], ['A04', '生產組'], ['002', '客服'], ['005', '通路'], ['006', '電商'], ['016', '京站百貨'], ['020', '永康東橋'], ['024', '行銷部(新)'], ['036', '新光A11']];
+const AP = {msg:'', msgId:'', busy:false, missing:null};
+const apStart = h => (h.offer && isDate(h.offer.f.date) && h.offer.f.date) || (isDate(h.startDate) && h.startDate) || '';
+/** 還沒填的必填（新人的、人資的分開）：規則和雲端後端 apMissing_ 相同 */
+function apMiss(h){
+  const ap = h.ap || {}, hr = h.apHr || {}, a = [];
+  for (const [k, t] of Object.entries(AP_REQ)) if (!ap[k]) a.push(t);
+  if (ap.idType && ap.idType !== '台灣身分證' && !ap.idExp) a.push('身分證件到期日');
+  (ap.edu || []).forEach((e, i) => { for (const [k, t] of Object.entries(AP_EDU_REQ)) if (!e[k]) a.push(`學歷 ${i + 1}：${t}`); });
+  (ap.jobs || []).forEach((e, i) => { for (const [k, t] of Object.entries(AP_JOB_REQ)) if (!e[k]) a.push(`工作經歷 ${i + 1}：${t}`); });
+  (ap.certs || []).forEach((e, i) => { if (!e.name) a.push(`證照 ${i + 1}：證照名稱`); });
+  const r = Object.entries(AP_HR_REQ).filter(([k]) => !hr[k]).map(([, t]) => t);
+  if (!apStart(h)) r.push('報到日期（Offer 或預計報到日）');
+  return {ap: h.ap ? a : ['新人還沒填入職資料'], hr: r};
+}
+const apMask = v => !v ? '' : canPii() ? v : maskId(v);
+function apolloHTML(h){
+  if (!AP_STAGES.includes(h.stage)) return '';
+  const ap = h.ap, hr = h.apHr || {}, m = apMiss(h), ed = canEdit();
+  const sel = (k, list, v) => `<select class="inp" id="aph-${k}" data-aph="${k}"${ed ? '' : ' disabled'}><option value="">請選擇</option>${(HL[list] || []).map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  const inp = (k, v, attrs = '') => `<input class="inp" id="aph-${k}" data-aph="${k}" value="${esc(v || '')}" ${attrs}${ed ? '' : ' disabled'}>`;
+  const f = (k, label, html, req) => `<div class="f"><label for="aph-${k}">${label}${req ? ' *' : ''}</label>${html}</div>`;
+  const staff = (ST.list('staff') || []).filter(x => x && x.no && x.on !== false);
+  const sum = ap ? [['姓名', `${ap.last || ''}${ap.first || ''}${ap.en ? `（${ap.en}）` : ''}`], ['證件', `${ap.idType || ''} ${apMask(ap.idNo)}`], ['生日', ap.birth ? slash(ap.birth) : ''],
+    ['手機', ap.mobile], ['戶籍地址', ap.addrReg], ['學歷／經歷／證照', `${(ap.edu || []).length}／${(ap.jobs || []).length}／${(ap.certs || []).length} 筆`]]
+    .map(([k, v]) => `<div class="k">${k}</div><div>${esc(v || '—')}</div>`).join('') : '';
+  const exp = h.apExp ? `已在 ${fmtTime(h.apExp.at)} 匯出${h.apExp.by ? `（${esc(h.apExp.by)}）` : ''}` : '';
+  const ready = !m.ap.length && !m.hr.length;
+  const others = canPii() ? [...S.hires.values()].filter(x => x.id !== h.id && AP_STAGES.includes(x.stage) && !x.apExp && !apMiss(x).ap.length && !apMiss(x).hr.length) : [];
+  return `<section class="sec"><h3>Apollo 入職資料 <span class="h-count">${ready ? '可以匯出' : '還沒齊'}</span></h3>
+    <p class="muted">新人在報到連結的同一頁填入職資料、拍照上傳證件（面試前填過的會先帶入）；人資在下面補職位資料，齊了就能匯出 Apollo「Hire 批次匯入」檔，證件照片一起打包。</p>
+    ${ap ? `<div class="ap-sum">${sum}</div><p class="muted">新人 ${fmtTime(ap.at)} 儲存${h.onb && onbLive(h) ? `・<a href="${esc(onbLink(h))}" target="_blank" rel="noopener">打開新人填寫頁（可以幫忙修改）</a>` : ''}</p>`
+      : `<p class="note">新人還沒填入職資料。${h.onb ? '報到連結已經傳了，新人填好會出現在這裡。' : '按「報到連結」的「傳報到連結（104）」，新人會在同一頁填資料、上傳證件。'}</p>`}
+    ${m.ap.length && ap ? `<p class="imp-msg">新人還缺：${esc(m.ap.slice(0, 10).join('、'))}${m.ap.length > 10 ? '…' : ''}</p>` : ''}
+    <h4 class="ap-h4">職位資料（人資填）</h4>
+    <div class="grid2">
+      ${f('title', '職稱', sel('title', 'title', hr.title), 1)}
+      ${f('empType', '身分類別', sel('empType', 'empType', hr.empType), 1)}
+      ${f('dept', '所屬單位（部門代碼）', inp('dept', hr.dept, 'list="aph-dl-dept" maxlength="20" placeholder="例如：020"'), 1)}
+      ${f('boss', '直屬主管（工號）', inp('boss', hr.boss, 'list="aph-dl-boss" maxlength="20" placeholder="例如：P0685"'), 1)}
+      ${f('region', '地區', sel('region', 'region', hr.region), 1)}
+      ${f('grade', '職等', sel('grade', 'grade', hr.grade))}
+      ${f('level', '職級', sel('level', 'level', hr.level))}
+      ${f('compMail', '公司信箱（Apollo 登入用）', inp('compMail', hr.compMail, 'type="email" maxlength="120"'))}
+      ${f('workMobile', '公務手機', inp('workMobile', hr.workMobile, 'type="tel" maxlength="20"'))}
+      ${f('inDays', '承認內部年資（天）', inp('inDays', hr.inDays, 'inputmode="decimal" maxlength="6" placeholder="0"'))}
+      ${f('workY', '工作年資（年）', inp('workY', hr.workY, 'inputmode="decimal" maxlength="4" placeholder="0"'))}
+      ${f('proY', '專業年資（年）', inp('proY', hr.proY, 'inputmode="decimal" maxlength="4" placeholder="0"'))}
+      ${f('gradeY', '承認職等年資（年）', inp('gradeY', hr.gradeY, 'inputmode="decimal" maxlength="4" placeholder="0"'))}
+    </div>
+    <datalist id="aph-dl-dept">${AP_DEPTS.map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('')}</datalist>
+    <datalist id="aph-dl-boss">${staff.map(x => `<option value="${esc(x.no)}">${esc(x.name)}${x.dept ? '・' + esc(x.dept) : ''}</option>`).join('')}</datalist>
+    ${m.hr.length ? `<p class="muted">人資還缺：${esc(m.hr.join('、'))}</p>` : ''}
+    ${exp ? `<p class="muted">${exp}</p>` : ''}
+    ${AP.msg && AP.msgId === h.id ? `<p class="imp-msg${AP.err ? ' err' : ''}" role="status">${esc(AP.msg)}</p>` : ''}
+    <div class="fl-row">
+      ${ed ? '<button class="btn sm" type="button" data-act="ap-hr-save">儲存職位資料</button>' : ''}
+      ${canPii() ? `<button class="btn sm primary" type="button" data-act="ap-export"${ready && !AP.busy ? '' : ' disabled'}>${AP.busy ? '匯出中…' : '匯出 Apollo 入職檔（含照片）'}</button>` : '<span class="muted">要有「查看證件」權限才能匯出</span>'}
+      ${ready && others.length && !AP.busy ? `<button class="btn sm" type="button" data-act="ap-export-all">連同其他 ${others.length} 位一起匯出</button>` : ''}
+    </div></section>`;
+}
+function apHrRead(){
+  const hr = {};
+  document.querySelectorAll('[data-aph]').forEach(el => { const v = String(el.value || '').trim(); if (v) hr[el.dataset.aph] = v; });
+  return hr;
+}
+function apHrSave(id){
+  const h = S.hires.get(id); if (!h || !canEdit()) return;
+  const hr = apHrRead();
+  for (const k of ['inDays', 'workY', 'proY', 'gradeY']) if (hr[k] && !/^\d+(\.\d+)?$/.test(hr[k])) { AP.msg = '年資請填數字（例如 0、1.5）'; AP.err = true; AP.msgId = id; refreshDrawer(); return; }
+  saveHire(id, r => { r.apHr = Object.assign({}, hr, {at:Date.now(), by:myName()}); });
+  pullFromStore(); AP.msg = '已儲存職位資料'; AP.err = false; AP.msgId = id; refreshDrawer();
+}
+async function apExport(id, all){
+  const h = S.hires.get(id); if (!h || !canPii() || AP.busy) return;
+  if (canEdit() && document.querySelector('[data-aph]')) {   // 畫面上改了職位資料還沒按儲存：先存
+    const hr = apHrRead(), old = h.apHr || {};
+    if (['title', 'empType', 'dept', 'boss', 'region', 'grade', 'level', 'compMail', 'workMobile', 'inDays', 'workY', 'proY', 'gradeY'].some(k => (hr[k] || '') !== (old[k] || ''))) { apHrSave(id); await ST.syncNow(); }
+  }
+  const ids = [id].concat(all ? [...S.hires.values()].filter(x => x.id !== id && AP_STAGES.includes(x.stage) && !x.apExp && !apMiss(x).ap.length && !apMiss(x).hr.length).map(x => x.id) : []).slice(0, 10);
+  AP.busy = true; AP.msg = '正在產生 Apollo 檔、打包證件照片（約 30 秒）…'; AP.err = false; AP.msgId = id; refreshDrawer();
+  try {
+    await ST.syncNow();
+    const j = await AU.api('hireExport', {ids});
+    if (!j.ok) throw Object.assign(new Error(j.message || '匯出失敗'), {j});
+    const bin = atob(j.data), arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([arr], {type:'application/zip'})), a = document.createElement('a');
+    a.href = url; a.download = j.name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    AP.msg = `已下載 ${j.name}（${j.n} 位、${j.photos} 個證件檔）。解壓縮後把 xlsx 匯入 Apollo「Hire 批次匯入」，照片在「照片」資料夾。`;
+    ST.syncNow();
+  } catch (e) {
+    const miss = e.j && e.j.missing;
+    AP.msg = miss ? `還不能匯出：${miss.map(x => `${x.name}（${x.miss.slice(0, 4).join('、')}${x.miss.length > 4 ? '…' : ''}）`).join('；')}` : (e.message || '匯出失敗，請再試一次');
+    AP.err = true;
+  }
+  AP.busy = false; refreshDrawer();
 }
 /* ---------- Offer 錄取通知書：看板填好排隊，hr@ 的履歷篩選程式約 5 分鐘內用部門範本產生 PDF、用 hr@ 寄出，PDF 傳回看板 ---------- */
 const OFFER_FORMAL = true;    // 2026-11-26 測試成功後打開：可以正式寄給新人（寄出前再確認一次），寄出後可用 104 聊聊通知
@@ -2421,8 +2530,8 @@ function refreshDrawer(){
   $('#d-form').innerHTML = h.form ? formDataHTML(h) : '';
   $('#iv-meta').textContent = h.ivAt ? `最後更新 ${fmtTime(h.ivAt)}${h.ivBy ? '・' + h.ivBy : ''}` : '';
   const steps = stepsHTML(h), ext = extHTML(h);
-  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h), offer = offerHTML(h);
-  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + docs + steps + offer + ext : offer + onb + steps + ext + docs;
+  const docs = !['interview','rejected','confirm','declined'].includes(h.stage) ? docsHTML(h) : '', onb = onbHTML(h), offer = offerHTML(h), apo = apolloHTML(h);
+  $('#d-dyn').innerHTML = h.stage === 'docs' ? onb + apo + docs + steps + offer + ext : offer + onb + apo + steps + ext + docs;
   $('#d-foot').innerHTML = footHTML(h);
   const jb = $('#d-job'), af = jb.contains(document.activeElement) ? document.activeElement.id : '';
   jb.hidden = h.stage !== 'interview' || (!S.jobs.length && !isAdmin());
@@ -2889,6 +2998,9 @@ $('#drawer').addEventListener('click', e => {
     case 'rec-del-yes': deleteRecord(id); break;
     case 'onb-send': { const h1 = onbEnsure(id); if (h1 && !hireSend(h1, onbText(h1))) toast('找不到 104 履歷或聊聊對話，請改用「複製報到訊息」'); refreshDrawer(); break; }
     case 'onb-copy': { const h1 = onbEnsure(id); if (h1) { copyText(onbText(h1)); toast('已複製報到訊息，貼到 LINE 或簡訊傳給新人'); } refreshDrawer(); break; }
+    case 'ap-hr-save': apHrSave(id); break;
+    case 'ap-export': apExport(id, false); break;
+    case 'ap-export-all': apExport(id, true); break;
     case 'onb-new': { const h1 = onbEnsure(id, true); if (h1) toast('已換新報到連結，舊連結不能再用'); refreshDrawer(); break; }
     case 'offer-test': offerQueue(id, 'test'); break;
     case 'offer-formal': if (OFFER_FORMAL) offerQueue(id, 'formal'); break;
