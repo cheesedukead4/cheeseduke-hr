@@ -39,11 +39,8 @@ const PERSON = [
   {k:'nat', label:'國籍', req:1, list:'nat'},
   {k:'marital', label:'婚姻狀態', list:'marital'},
   {k:'mil', label:'兵役狀態', list:'mil', hint:'女生和外籍不用填'},
-  {k:'milType', label:'役別', list:'milType'},
-  {k:'milFrom', label:'兵役期間（起）', type:'date'},
-  {k:'milTo', label:'兵役期間（迄）', type:'date'},
-  {k:'milWhy', label:'免役原因'},
-  {k:'entry', label:'入境時間', type:'date', hint:'外籍同仁才要填'}
+  {k:'milType', label:'役別', list:'milType'}
+  // 範本還有兵役期間（起迄）、免役原因、入境時間：使用者說不用填（2026-11-27），匯出時留空
 ];
 const CONTACT = [
   {k:'mobile', label:'手機', req:1, type:'tel'},
