@@ -36,7 +36,7 @@ const STAGES = [
   {key:'interview',   board:'recruit',  n:4, title:'面試',        hint:'面試後決定錄取或不錄取'},
   {key:'confirm',     board:'recruit',  n:5, title:'確認入職',    hint:'錄取後確認要不要來'},
   {key:'offer',       board:'recruit',  n:6, title:'Offer',       hint:'寄 Offer，等報到'},
-  {key:'docs',        board:'pipeline', n:1, title:'報到・證件',  hint:'報到時拍照上傳證件'},
+  {key:'docs',        board:'pipeline', n:1, title:'報到',        hint:'已報到；證件在 Offer 後由新人用報到連結上傳'},
   {key:'apollo_up',   board:'pipeline', n:2, title:'APOLLO 上傳', hint:'人事資料上傳 APOLLO'},
   {key:'apollo_down', board:'pipeline', n:3, title:'APOLLO 下載', hint:'自 APOLLO 下載檔案'},
   {key:'insurance',   board:'pipeline', n:4, title:'勞健保上傳',  hint:'申報勞健保加保'},
@@ -52,7 +52,7 @@ const STEP_DEFS = [   // 和 FLOW 前 7 步一一對應
   {key:'interview',   label:'面試結果'},
   {key:'confirm',     label:'確認入職'},
   {key:'offer',       label:'Offer・等報到'},
-  {key:'docs',        label:'報到・證件上傳'},
+  {key:'docs',        label:'報到'},
   {key:'apollo_up',   label:'APOLLO 上傳'},
   {key:'apollo_down', label:'APOLLO 下載'},
   {key:'insurance',   label:'勞健保上傳（加保）'}
@@ -61,13 +61,13 @@ const STEP_DONE = {interview:'面試結果：錄取', confirm:'確認入職：�
 const STEP_HINT = {
   interview:'確認面試結果後，按「錄取」或「未錄取」。',
   confirm:'和應徵者確認要不要來：要 → 寄 Offer；不要 → 婉拒入職。',
-  offer:'在下方「Offer 錄取通知書」填好資料產生 Offer、確認報到日；報到當天按「已報到」。',
-  docs:'拍照上傳身分證／居留證正反面，存摺封面可一併上傳。',
+  offer:'在下方「Offer 錄取通知書」填好資料產生 Offer、確認報到日；寄出後傳「報到連結」，新人填入職資料、上傳證件；報到當天按「已報到」。',
+  docs:'新人報到。證件在 Offer 後已由新人用報到連結上傳，這裡只要確認，有缺再補。',
   apollo_up:'將新人人事資料上傳至 APOLLO。',
   apollo_down:'自 APOLLO 下載加保所需檔案。',
   insurance:'至勞保局 e 化服務系統申報勞保、就保、健保加保。'
 };
-const ADV_LABEL = {offer:'已報到 →', docs:'證件齊全，下一步', apollo_up:'已上傳 APOLLO', apollo_down:'已下載', insurance:'已完成加保'};
+const ADV_LABEL = {offer:'已報到 →', docs:'下一步 →', apollo_up:'已上傳 APOLLO', apollo_down:'已下載', insurance:'已完成加保'};
 const EMPTY = {
   x_screen:'最近 14 天沒有新的履歷',
   x_invite:'沒有等回覆的邀約',
@@ -1114,7 +1114,7 @@ function advance(id){
   if (h.stage === 'confirm') { confirmJoin(id, true); return; }
   const i = FLOW.indexOf(h.stage);
   if (i < 1 || i >= FLOW.length - 1) return;
-  if (h.stage === 'docs' && !docsReady(h)) { openDrawer(id); toast('請先上傳身分證／居留證正反面'); return; }
+  // 報到不用再拍證件：證件在 Offer 後由新人用報到連結上傳（2026-11-27 使用者確認），缺的在詳細資料補
   const cur = h.stage, next = FLOW[i + 1];
   if (cur === 'offer') {   // 已報到：沒填到職日就記下（試算表的預計報到日已到就用它，否則用今天）
     const t = today(), plan = (extFor(h).result || {}).start || '';
@@ -1437,6 +1437,7 @@ function cardHTML(h){
     const rs = extFor(h).result;
     chips.push(startChip(h));
     if (h.ofr && h.ofr.ans === 'yes') chips.push(chip(`新人已接受錄取 ${md(tsDate(h.ofr.ansAt))}`, 'ok'));
+    if (h.onb) { const dc = docCount(h); chips.push(chip(`證件 ${dc.have}/${dc.need}`, dc.have >= dc.need ? 'ok' : '')); if (h.ap) chips.push(chip('入職資料已填', 'ok')); }   // 報到連結：新人上傳的證件、入職資料
     if (h.ofc && h.ofc.ans === 'yes') chips.push(chip('新人確認會準時報到', 'ok'));
     else if (h.ofc && h.ofc.ans === 'change') chips.push(chip(`報到日要調整${h.ofc.want ? '：想改到 ' + md(h.ofc.want) : ''}${h.ofc.note ? '（' + h.ofc.note + '）' : ''}`, 'warn'));
     const oev = (extFor(h).invite || {}).ev || ''; if (/^到職日期提醒/.test(oev)) chips.push(chip(`104 報到：${oev.replace('到職日期提醒', '')}`, evCls(oev)));
@@ -1451,10 +1452,10 @@ function cardHTML(h){
     chips.push(chip(due.text, due.cls));
     if (h.stage === 'docs') {
       const c = docCount(h);
-      chips.push(chip(`證件 ${c.have}/${c.need}`, c.have >= c.need ? 'ok' : ''));
+      chips.push(chip(`證件 ${c.have}/${c.need}`, c.have >= c.need ? 'ok' : 'warn'));
       if (canW) {
-        acts.push(`<button class="btn sm" type="button" data-act="open" data-id="${id}">${c.have ? '查看證件' : '上傳證件'}</button>`);
-        if (c.have >= c.need) acts.push(`<button class="btn sm primary" type="button" data-act="advance" data-id="${id}">下一步 →</button>`);
+        if (c.have) acts.push(`<button class="btn sm" type="button" data-act="open" data-id="${id}">查看證件</button>`);
+        acts.push(`<button class="btn sm primary" type="button" data-act="advance" data-id="${id}">下一步 →</button>`);
       }
     } else if (canW) {
       acts.push(`<button class="btn sm primary" type="button" data-act="advance" data-id="${id}">${ADV_LABEL[h.stage]}</button>`);
@@ -1840,7 +1841,7 @@ function renderOverview(){
     const fresh = R.meta ? extItems('x_screen', false) : [], top = fresh.filter(r => r.tier === '推薦面試').length;
     const remRows = (M.meta ? mnReminders() : []).map(x => `<li><button class="ov-row" type="button" data-mn-go="${esc(x.i.id)}"><span class="ov-who"><span class="ov-name">${esc(x.d.label || x.i.title)}</span><span class="ov-sub">${esc(x.i.title)}・${x.date.replace(/-/g, '/')}</span></span>${chip(dueText(x.n), x.n <= 7 ? 'warn' : '')}</button></li>`).join('');
     alertBody = (rows || remRows ? `<ul class="ov-list">${rows}${remRows}</ul>` : '<p class="rt-empty">目前沒有報到、加保或到期事項需要處理。</p>')
-      + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">證件未齊 ${docsMissing} 位 →</button>` : '')
+      + (docsMissing ? `<button class="ov-more" type="button" data-go="pipeline" data-tab="docs">已報到、證件還沒上傳 ${docsMissing} 位 →</button>` : '')
       + (S.chat.unread ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">104 聊聊未讀 ${S.chat.unread} 則 →</button>` : '')
       + (S.outbox.some(o => o.status === 'failed') ? `<button class="ov-more" type="button" data-go="recruit" data-tab="x_screen">104 送出失敗 ${S.outbox.filter(o => o.status === 'failed').length} 筆 →</button>` : '')
       + (confirming ? `<button class="ov-more" type="button" data-go="recruit" data-tab="confirm">錄取待確認入職 ${confirming} 位 →</button>` : '')
@@ -2513,8 +2514,7 @@ function stepsHTML(h){
         if (d.key === 'interview') act = '<button class="btn sm primary" type="button" data-act="hire">錄取</button><button class="btn sm" type="button" data-act="reject">未錄取</button>';
         else if (d.key === 'confirm') act = '<button class="btn sm primary" type="button" data-act="join-yes">要，寄 Offer</button><button class="btn sm" type="button" data-act="join-no">不要（婉拒）</button>';
         else if (d.key === 'docs') {
-          const ok = docsReady(h);
-          act = `<button class="btn sm primary" type="button" data-act="advance"${ok ? '' : ' disabled'}>${ADV_LABEL.docs}</button>` + (ok ? '' : '<span class="step-note">需先上傳身分證／居留證正反面</span>');
+          act = `<button class="btn sm primary" type="button" data-act="advance">${ADV_LABEL.docs}</button>` + (docsReady(h) ? '' : '<span class="step-note">新人還沒上傳身分證／居留證正反面，可以在下面「證件照片」補</span>');
         } else act = `<button class="btn sm primary" type="button" data-act="advance">${ADV_LABEL[d.key]}</button>`;
         if (i > 0) act += '<button class="btn sm ghost" type="button" data-act="back">退回上一步</button>';
       }
@@ -2574,6 +2574,7 @@ function docsHTML(h){
   const add = canUp ? `<div class="slot add"><div class="slot-l">新增其他文件</div><div class="thumb empty${busyOther ? ' busy' : ''}">${busyOther ? '上傳中…' : '健保眷屬、學歷證明等'}</div>${busyOther ? '' : '<div class="slot-btns"><button class="btn sm" type="button" data-act="cam" data-key="other_new">拍照</button><button class="btn sm" type="button" data-act="pick" data-key="other_new">選檔</button></div>'}</div>` : '';
   const c = docCount(h);
   return `<section class="sec"><h3>證件照片 <span class="h-count">必要 ${c.have}/${c.need}</span></h3>
+    <p class="muted">新人在 Offer 後用報到連結自己上傳；報到時不用再拍，缺的才在這裡補。</p>
     <div class="slots">${slots.map(s => slotHTML(h, s, canUp)).join('')}${add}</div>
     <p class="note">手機按「拍照」會直接開相機；照片自動縮小後存在公司雲端硬碟的「證件照片」資料夾，只有名單內、有「查看證件」權限的人看得到。</p></section>`;
 }
